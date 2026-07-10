@@ -1,10 +1,10 @@
 "use strict";
 
-const { DEFAULT_NETWORKS } = require("./constants");
 const { assertGameAdapter, adapterName, normalizeMatch, resolveAdapter, resolveMatch, resolveWinnerAddress } = require("./adapter");
 const { CovenantEscrowEngine } = require("./escrow-engine");
 const { JsonStore } = require("./json-store");
 const { KascovLabAdapter } = require("./kascov-lab-adapter");
+const { resolveNetworkConfig } = require("./network");
 const { ProofBuilder } = require("./proof-builder");
 const { SettlementEngine } = require("./settlement-engine");
 const gomokuAdapter = require("./adapters/gomoku");
@@ -12,7 +12,8 @@ const { nowIso } = require("./utils");
 
 class KaspaCovenantGameKit {
   constructor(options = {}) {
-    this.network = options.network || DEFAULT_NETWORKS[options.networkId || "tn10"];
+    this.network = resolveNetworkConfig(options);
+    this.networkId = this.network.id;
     this.store = options.store || new JsonStore(options.storeFile || "");
     this.adapters = new Map();
 

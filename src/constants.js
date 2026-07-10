@@ -8,20 +8,26 @@ const DEFAULT_NETWORKS = {
     kaspaNetworkId: "testnet-10",
     label: "Kaspa Testnet 10",
     addressPrefix: "kaspatest",
+    currencySymbol: "TKAS",
+    isTestnet: true,
     restApi: "https://api-tn10.kaspa.org",
     explorerApi: "https://api-tn10.kaspa.org",
     kascovExplorerBase: "https://kascov-explorer.web.app/testnet-10",
-    mode: "active"
+    mode: "active",
+    requiresMainnetConfirmation: false
   },
   mainnet: {
     id: "mainnet",
     kaspaNetworkId: "mainnet",
     label: "Kaspa Mainnet",
     addressPrefix: "kaspa",
+    currencySymbol: "KAS",
+    isTestnet: false,
     restApi: "https://api.kaspa.org",
     explorerApi: "https://api.kaspa.org",
     kascovExplorerBase: "https://kascov-explorer.web.app/mainnet",
-    mode: "reserved"
+    mode: "production-guarded",
+    requiresMainnetConfirmation: true
   }
 };
 

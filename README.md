@@ -1,14 +1,14 @@
 # Kaspa Covenant Game Kit
 
-SDK-style modules for building Kaspa TN10 / SilverScript covenant-backed games.
+SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed games.
 
 中文：这是一个面向开发者的 Kaspa covenant 游戏 SDK 雏形。它把“游戏规则”和“链上托管结算”拆开，让不同游戏只需要实现一个很薄的 adapter，就能复用押注锁定、签名、广播、结算和凭证展示这套流程。
 
-> Experimental: TN10 first. Mainnet use needs independent review, wallet compatibility testing, and contract audits.
+> Experimental: TN10 is the default. Mainnet uses the same SDK path, but requires an explicit switch because it spends real KAS.
 
 ## What This SDK Does
 
-- Creates a two-player, player-funded covenant escrow intent.
+- Creates a two-player, player-funded covenant escrow intent on TN10 or mainnet.
 - Builds Toccata v1 covenant transaction drafts for wallet signing.
 - Merges player signatures and broadcasts signed covenant transactions.
 - Maps a game winner to the covenant release path, currently `buyer` or `seller`.
@@ -47,7 +47,8 @@ const { KaspaCovenantGameKit } = require("kaspa-covenant-game-kit");
 const myGame = require("./my-game-adapter");
 
 const kit = new KaspaCovenantGameKit({
-  networkId: "tn10",
+  networkId: process.env.KASPA_COVENANT_NETWORK || "tn10",
+  allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
   adapter: myGame,
   arbiter: {
     address: process.env.ARBITER_ADDRESS,
@@ -61,6 +62,40 @@ const state = kit.createState("my-game");
 const match = kit.toMatch({ game: "my-game", room, state });
 const intent = kit.createEscrowIntent({ match });
 ```
+
+## Network Switch
+
+Default TN10:
+
+```bash
+KASPA_COVENANT_NETWORK=tn10
+```
+
+Mainnet, same API, explicit confirmation:
+
+```bash
+KASPA_COVENANT_NETWORK=mainnet
+KASPA_COVENANT_ALLOW_MAINNET=true
+```
+
+Direct constructor usage:
+
+```js
+const tn10Kit = new KaspaCovenantGameKit({ networkId: "tn10", adapter: myGame, arbiter });
+
+const mainnetKit = new KaspaCovenantGameKit({
+  networkId: "mainnet",
+  allowMainnet: true,
+  adapter: myGame,
+  arbiter
+});
+```
+
+The adapter, `match` shape, escrow intent, signature collection, settlement,
+and proof APIs stay the same. The preset changes address prefixes, network id,
+REST / wRPC targets, explorer links, and display symbol.
+
+More detail: [docs/network-switch.md](docs/network-switch.md)
 
 ## Adapter Contract
 
@@ -143,8 +178,8 @@ node examples/custom-game-adapter.js
 
 ## Status
 
-- TN10: active experimental path.
-- Mainnet: reserved.
+- TN10: default active experimental path.
+- Mainnet: same SDK path, production-guarded behind `allowMainnet`.
 - Game mode: two-player escrow first.
 - Wallet surface: compatible wallets need public key access and signing support for the covenant draft.
 - Settlement adapter: `kascov-lab` for current TN10 flow.

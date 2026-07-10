@@ -7,7 +7,8 @@ const { KaspaCovenantGameKit } = require("kaspa-covenant-game-kit");
 const myGame = require("./my-game-adapter");
 
 const kit = new KaspaCovenantGameKit({
-  networkId: "tn10",
+  networkId: process.env.KASPA_COVENANT_NETWORK || "tn10",
+  allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
   adapter: myGame,
   arbiter: {
     address: process.env.ARBITER_ADDRESS,
@@ -16,6 +17,10 @@ const kit = new KaspaCovenantGameKit({
   }
 });
 ```
+
+Use `KASPA_COVENANT_NETWORK=tn10` for testnet. Use
+`KASPA_COVENANT_NETWORK=mainnet` plus
+`KASPA_COVENANT_ALLOW_MAINNET=true` for mainnet.
 
 ## 2. Build A Match
 

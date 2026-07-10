@@ -3,10 +3,13 @@ export interface NetworkConfig {
   kaspaNetworkId: string;
   label?: string;
   addressPrefix?: string;
+  currencySymbol?: string;
+  isTestnet?: boolean;
   restApi?: string;
   explorerApi?: string;
   kascovExplorerBase?: string;
   mode?: string;
+  requiresMainnetConfirmation?: boolean;
 }
 
 export interface Player {
@@ -80,6 +83,25 @@ export interface JsonStoreState {
 }
 
 export declare const DEFAULT_NETWORKS: Record<"tn10" | "mainnet", NetworkConfig>;
+export declare const ENV_NETWORK_KEY: "KASPA_COVENANT_NETWORK";
+export declare const ENV_ALLOW_MAINNET_KEY: "KASPA_COVENANT_ALLOW_MAINNET";
+export declare function normalizeNetworkId(value?: string): "tn10" | "mainnet" | string;
+export declare function networkIdFrom(options?: { network?: NetworkConfig; networkId?: string }): string;
+export declare function mainnetAllowed(options?: { allowMainnet?: boolean }): boolean;
+export declare function resolveNetworkConfig(options?: {
+  network?: NetworkConfig;
+  networkId?: "tn10" | "mainnet" | string;
+  allowMainnet?: boolean;
+}): NetworkConfig;
+export declare function networkSwitchConfig(options?: {
+  network?: NetworkConfig;
+  networkId?: "tn10" | "mainnet" | string;
+  allowMainnet?: boolean;
+}): {
+  network: NetworkConfig;
+  env: { network: string; allowMainnet: string };
+  usage: { tn10: string; mainnet: string };
+};
 
 export declare class JsonStore {
   constructor(file?: string);
@@ -124,6 +146,7 @@ export declare class KaspaCovenantGameKit {
   constructor(options?: {
     network?: NetworkConfig;
     networkId?: "tn10" | "mainnet";
+    allowMainnet?: boolean;
     store?: JsonStore;
     storeFile?: string;
     adapter?: GameAdapter;

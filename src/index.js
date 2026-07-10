@@ -4,6 +4,7 @@ const constants = require("./constants");
 const utils = require("./utils");
 const transcript = require("./transcript");
 const adapter = require("./adapter");
+const network = require("./network");
 const { CovenantEscrowEngine } = require("./escrow-engine");
 const { JsonStore } = require("./json-store");
 const { KascovLabAdapter, parseKascovLabDeploy, parseKascovLabSettle } = require("./kascov-lab-adapter");
@@ -18,6 +19,7 @@ module.exports = {
   ...utils,
   ...transcript,
   ...adapter,
+  ...network,
   KaspaCovenantGameKit,
   CovenantEscrowEngine,
   JsonStore,
