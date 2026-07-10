@@ -1,0 +1,28 @@
+// Kaspa Covenant Game Kit Gomoku escrow draft.
+// Target: SilverScript / kascov-lab on Kaspa Testnet 10.
+// This contract source is an adapter example. The JavaScript engine keeps
+// game validation outside the covenant and releases by buyer/seller path.
+
+contract GomokuEscrow(
+  bytes blackPubKey,
+  bytes whitePubKey,
+  bytes refereePubKey,
+  int stakeSompi,
+  int expiresAtDaa
+) {
+  function claimBlack(sig blackSig, bytes transcriptHash) {
+    require(checkSig(blackSig, blackPubKey));
+    require(verifyRefereeDecision(refereePubKey, transcriptHash, 1));
+  }
+
+  function claimWhite(sig whiteSig, bytes transcriptHash) {
+    require(checkSig(whiteSig, whitePubKey));
+    require(verifyRefereeDecision(refereePubKey, transcriptHash, 2));
+  }
+
+  function refund(sig blackSig, sig whiteSig, int currentDaa) {
+    require(currentDaa >= expiresAtDaa);
+    require(checkSig(blackSig, blackPubKey));
+    require(checkSig(whiteSig, whitePubKey));
+  }
+}

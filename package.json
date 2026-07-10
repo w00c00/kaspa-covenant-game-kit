@@ -1,0 +1,25 @@
+{
+  "name": "kaspa-covenant-game-kit",
+  "version": "0.1.0",
+  "description": "Reusable Kaspa TN10 SilverScript covenant escrow and game settlement kit.",
+  "main": "src/index.js",
+  "private": true,
+  "scripts": {
+    "check": "node --check src/index.js && node --check src/escrow-engine.js && node --check src/settlement-engine.js && node --check src/adapters/gomoku.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "kaspa",
+    "tn10",
+    "silverscript",
+    "covenant",
+    "game",
+    "escrow"
+  ],
+  "dependencies": {
+    "@kluster/kaspa-wasm": "2.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
