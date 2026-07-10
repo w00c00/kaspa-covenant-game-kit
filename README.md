@@ -1,118 +1,153 @@
 # Kaspa Covenant Game Kit
 
-Reusable Kaspa TN10 / SilverScript covenant escrow and game settlement modules extracted from the Kaspa Arena experiment.
+SDK-style modules for building Kaspa TN10 / SilverScript covenant-backed games.
 
-中文：这是从 Kaspa Arena 五子棋实验项目里单独抽出来的 covenant 对局托管与结算工具包。它不会影响原来的 `kaspa-arena` 项目，目标是让后续类似游戏可以轻度修改后直接复用。
+中文：这是一个面向开发者的 Kaspa covenant 游戏 SDK 雏形。它把“游戏规则”和“链上托管结算”拆开，让不同游戏只需要实现一个很薄的 adapter，就能复用押注锁定、签名、广播、结算和凭证展示这套流程。
 
-## What It Provides
+> Experimental: TN10 first. Mainnet use needs independent review, wallet compatibility testing, and contract audits.
 
-- Player-funded two-party covenant escrow intent generation.
-- Kasware-compatible signing draft shape for Toccata v1 covenant transactions.
-- Signed transaction merge and broadcast helpers.
-- Winner-to-release-path settlement logic, mapping a game winner to `buyer` or `seller`.
-- Kascov Lab adapter for `settle-escrow`.
-- Human-readable proof builder with covenant id, deploy tx, settlement tx, release path, amount, and Kascov Explorer link.
-- A Gomoku adapter example: game state, move validation, five-in-row winner detection, and transcript generation.
+## What This SDK Does
+
+- Creates a two-player, player-funded covenant escrow intent.
+- Builds Toccata v1 covenant transaction drafts for wallet signing.
+- Merges player signatures and broadcasts signed covenant transactions.
+- Maps a game winner to the covenant release path, currently `buyer` or `seller`.
+- Settles through `kascov-lab settle-escrow` when configured.
+- Generates readable proof data: covenant id, lock tx, settlement tx, winner, amount, release path, and Kascov Explorer URL.
+- Provides a Gomoku adapter and a custom adapter example.
 
 ## 中文说明
 
-这个包把“游戏逻辑”和“链上 covenant 托管结算逻辑”分开：
+这个 SDK 目前专注 **1v1 游戏**：
 
-- 游戏只负责判断谁赢。
-- adapter 把游戏房间转换成统一 `match` 对象。
-- escrow engine 负责生成托管意图、构建玩家共同出资的 covenant 草案、合并签名和广播。
-- settlement engine 根据赢家地址选择 `buyer` 或 `seller` 释放路径。
-- proof builder 生成前端可以直接展示的结算凭据。
+- 游戏项目负责：房间、玩家、规则、胜负、前端体验。
+- SDK 负责：TN10 covenant 托管、钱包签名草案、结算路径、链上结算、凭据。
+- 新游戏只要实现 `toMatch(room, state)`，就可以接入最小流程。
+- 如果还实现 `createState / applyMove / getWinnerAddress`，就能获得更完整的 adapter 体验。
 
 ## Install
 
+Use from GitHub for now:
+
 ```bash
-npm install
+npm install github:w00c00/kaspa-covenant-game-kit
 ```
 
-This package is currently marked `private: true` while the API stabilizes.
+Local development:
 
-## Basic Usage
+```bash
+npm install
+npm test
+```
+
+## Quick Start
 
 ```js
-const {
-  CovenantEscrowEngine,
-  DEFAULT_NETWORKS,
-  JsonStore,
-  ProofBuilder,
-  SettlementEngine,
-  adapters
-} = require("kaspa-covenant-game-kit");
+const { KaspaCovenantGameKit } = require("kaspa-covenant-game-kit");
+const myGame = require("./my-game-adapter");
 
-const store = new JsonStore("./data/ledger.json");
-
-const escrowEngine = new CovenantEscrowEngine({
-  store,
-  network: DEFAULT_NETWORKS.tn10,
+const kit = new KaspaCovenantGameKit({
+  networkId: "tn10",
+  adapter: myGame,
   arbiter: {
     address: process.env.ARBITER_ADDRESS,
     publicKey: process.env.ARBITER_PUBLIC_KEY,
     arbiterHash: process.env.ARBITER_HASH
-  }
-});
-
-const proofBuilder = new ProofBuilder({
-  network: DEFAULT_NETWORKS.tn10,
+  },
   contractFile: "./contracts/gomoku_escrow.sil"
 });
 
-const settlementEngine = new SettlementEngine({
-  escrowEngine,
-  proofBuilder,
-  store
-});
-
-const state = adapters.gomoku.createState();
-const match = adapters.gomoku.toMatch(room, state);
-const intent = escrowEngine.createIntent(match);
+const state = kit.createState("my-game");
+const match = kit.toMatch({ game: "my-game", room, state });
+const intent = kit.createEscrowIntent({ match });
 ```
 
-## Match Shape
+## Adapter Contract
 
-Any game can use this kit if it can produce this object:
+Minimum adapter:
 
 ```js
-{
-  id: "MATCH-123",
-  roundId: "ROUND-1",
-  game: "gomoku",
-  stakeKas: 25,
-  players: [
-    { seat: 0, role: "black", address: "kaspatest:...", publicKey: "..." },
-    { seat: 1, role: "white", address: "kaspatest:...", publicKey: "..." }
-  ],
-  claimPaths: ["claimBlack(transcriptHash)", "claimWhite(transcriptHash)", "refund(after expiresAtDaa)"]
-}
+module.exports = {
+  name: "my-game",
+
+  toMatch(room, state) {
+    return {
+      id: room.id,
+      roundId: state.roundId,
+      game: "my-game",
+      stakeKas: room.stakeKas,
+      players: [
+        { seat: 0, role: "black", address: "...", publicKey: "..." },
+        { seat: 1, role: "white", address: "...", publicKey: "..." }
+      ]
+    };
+  }
+};
 ```
 
-For a new game, implement a small adapter that provides:
+Recommended adapter:
 
-- `createState()`
-- `toMatch(room, state)`
-- `applyMove(match, state, move)`
-- winner detection
-- transcript fields such as `moves`, `winner`, `winnerAddress`, and `result`
+```js
+module.exports = {
+  name: "my-game",
+  createState(options) {},
+  toMatch(room, state) {},
+  applyMove(match, state, move) {},
+  getWinnerAddress(match, state) {
+    return state.winnerAddress;
+  }
+};
+```
 
-## Current Status
+More detail: [docs/adapter.md](docs/adapter.md)
 
-This is an experimental extraction for TN10. The original Kaspa Arena site remains unchanged.
+## Common Flow
 
-- TN10: active experimental path.
-- Mainnet: reserved until covenant tooling, wallet signing, and contract behavior are audited.
-- Kascov Lab: used as the current settlement adapter.
-- Kasware: expected wallet signing surface is `getPublicKey` and `signPskt`.
+```js
+const draft = await kit.buildDeployDraft({ match });
 
-## Run Checks
+await kit.submitPlayerSignature({
+  match,
+  draft,
+  address: player.address,
+  signerInputIndex: 0,
+  signResult
+});
+
+const result = await kit.settleWinner({
+  match,
+  state,
+  winnerAddress: state.winnerAddress,
+  reason: "game-win"
+});
+```
+
+More detail: [docs/integration-flow.md](docs/integration-flow.md)
+
+## Core Exports
+
+- `KaspaCovenantGameKit`: high-level SDK facade.
+- `CovenantEscrowEngine`: low-level escrow intent, draft, signature, broadcast engine.
+- `SettlementEngine`: winner settlement engine.
+- `ProofBuilder`: proof and visible settlement builder.
+- `KascovLabAdapter`: wrapper around `kascov-lab`.
+- `JsonStore`: simple local storage adapter.
+- `adapters.gomoku`: reference game adapter.
+
+## Examples
 
 ```bash
-npm run check
-npm test
+node examples/memory-gomoku-flow.js
+node examples/custom-game-adapter.js
 ```
+
+## Status
+
+- TN10: active experimental path.
+- Mainnet: reserved.
+- Game mode: two-player escrow first.
+- Wallet surface: compatible wallets need public key access and signing support for the covenant draft.
+- Settlement adapter: `kascov-lab` for current TN10 flow.
 
 ## Credits
 
@@ -125,6 +160,6 @@ Thanks to:
 - Kascov Explorer: https://kascov-explorer.web.app
 - Kasware wallet: https://www.kasware.xyz
 
-## Warning
+## License
 
-This is an experimental project for verifying Kaspa covenant-based game settlement. Do not use it with mainnet funds without independent review, audits, and wallet compatibility testing.
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

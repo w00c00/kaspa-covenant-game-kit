@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 
+const name = "gomoku";
 const BOARD_SIZE = 15;
 const BLACK = 1;
 const WHITE = 2;
@@ -37,6 +38,10 @@ function toMatch(room, gameState = room.gameState) {
     })),
     claimPaths: ["claimBlack(transcriptHash)", "claimWhite(transcriptHash)", "refund(after expiresAtDaa)"]
   };
+}
+
+function getWinnerAddress(match, state = {}) {
+  return state.winnerAddress || match.winnerAddress || "";
 }
 
 function count(board, row, col, dr, dc, player) {
@@ -129,7 +134,9 @@ module.exports = {
   WHITE,
   applyMove,
   createState,
+  getWinnerAddress,
   hasFive,
+  name,
   randomTimeoutMove,
   refreshDeadline,
   toMatch

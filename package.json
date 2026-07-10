@@ -3,9 +3,28 @@
   "version": "0.1.0",
   "description": "Reusable Kaspa TN10 SilverScript covenant escrow and game settlement kit.",
   "main": "src/index.js",
-  "private": true,
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": "./src/index.js",
+    "./adapters/gomoku": "./src/adapters/gomoku.js"
+  },
+  "files": [
+    "src",
+    "contracts",
+    "docs",
+    "examples",
+    "vendor",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/w00c00/kaspa-covenant-game-kit.git"
+  },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/escrow-engine.js && node --check src/settlement-engine.js && node --check src/adapters/gomoku.js",
+    "check": "find src examples test -name '*.js' -print0 | xargs -0 -n1 node --check",
     "test": "node --test"
   },
   "keywords": [

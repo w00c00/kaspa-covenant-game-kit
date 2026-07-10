@@ -2,17 +2,15 @@
 
 const path = require("node:path");
 const {
-  CovenantEscrowEngine,
   DEFAULT_NETWORKS,
   JsonStore,
-  ProofBuilder,
-  SettlementEngine,
+  KaspaCovenantGameKit,
   adapters
 } = require("../src");
 
 const store = new JsonStore(path.join(__dirname, "..", "data", "demo-ledger.json"));
 
-const escrowEngine = new CovenantEscrowEngine({
+const kit = new KaspaCovenantGameKit({
   store,
   network: DEFAULT_NETWORKS.tn10,
   arbiter: {
@@ -20,6 +18,7 @@ const escrowEngine = new CovenantEscrowEngine({
     publicKey: "11".repeat(32),
     arbiterHash: "22".repeat(32)
   },
+  contractFile: path.join(__dirname, "..", "contracts", "gomoku_escrow.sil"),
   submitTransaction: async () => ({ transactionId: "aa".repeat(32) }),
   fetchUtxos: async (address) => [
     {
@@ -33,17 +32,6 @@ const escrowEngine = new CovenantEscrowEngine({
   ]
 });
 
-const proofBuilder = new ProofBuilder({
-  network: DEFAULT_NETWORKS.tn10,
-  contractFile: path.join(__dirname, "..", "contracts", "gomoku_escrow.sil")
-});
-
-const settlementEngine = new SettlementEngine({
-  escrowEngine,
-  proofBuilder,
-  store
-});
-
 const room = {
   id: "GOMOKU-DEMO",
   stake: 25,
@@ -54,9 +42,9 @@ const room = {
 };
 
 const state = adapters.gomoku.createState({ roundId: "round-demo" });
-const match = adapters.gomoku.toMatch(room, state);
-const intent = escrowEngine.createIntent(match);
-const pending = settlementEngine.createPendingSettlement({
+const match = kit.toMatch({ game: "gomoku", room, state });
+const intent = kit.createEscrowIntent({ match });
+const pending = kit.settlements.createPendingSettlement({
   match,
   winnerAddress: room.occupants[0].address,
   reason: "gomoku-five-in-row",
