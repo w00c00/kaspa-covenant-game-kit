@@ -7,7 +7,9 @@ export interface NetworkConfig {
   isTestnet?: boolean;
   restApi?: string;
   explorerApi?: string;
+  kascovNetworkId?: "testnet-10" | "mainnet" | string;
   kascovExplorerBase?: string;
+  kascovLiveDataUrl?: string;
   mode?: string;
   requiresMainnetConfirmation?: boolean;
 }
@@ -88,6 +90,8 @@ export declare const ENV_ALLOW_MAINNET_KEY: "KASPA_COVENANT_ALLOW_MAINNET";
 export declare function normalizeNetworkId(value?: string): "tn10" | "mainnet" | string;
 export declare function networkIdFrom(options?: { network?: NetworkConfig; networkId?: string }): string;
 export declare function mainnetAllowed(options?: { allowMainnet?: boolean }): boolean;
+export declare function kascovCliNetwork(network?: NetworkConfig): string;
+export declare function kascovTraceCommand(covenantId?: string, network?: NetworkConfig): string;
 export declare function resolveNetworkConfig(options?: {
   network?: NetworkConfig;
   networkId?: "tn10" | "mainnet" | string;

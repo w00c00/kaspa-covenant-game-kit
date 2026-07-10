@@ -12,7 +12,7 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 - Builds Toccata v1 covenant transaction drafts for wallet signing.
 - Merges player signatures and broadcasts signed covenant transactions.
 - Maps a game winner to the covenant release path, currently `buyer` or `seller`.
-- Settles through `kascov-lab settle-escrow` when configured.
+- Settles through a pluggable settlement runner, with `kascov-lab settle-escrow` supported for the current lab flow.
 - Generates readable proof data: covenant id, lock tx, settlement tx, winner, amount, release path, and Kascov Explorer URL.
 - Provides a Gomoku adapter and a custom adapter example.
 
@@ -182,7 +182,8 @@ node examples/custom-game-adapter.js
 - Mainnet: same SDK path, production-guarded behind `allowMainnet`.
 - Game mode: two-player escrow first.
 - Wallet surface: compatible wallets need public key access and signing support for the covenant draft.
-- Settlement adapter: `kascov-lab` for current TN10 flow.
+- Kascov network support: presets include both `testnet-10` and `mainnet` for Explorer / CLI proof links.
+- Settlement adapter: pluggable. `kascov-lab` is wired as the current lab runner; production apps can provide a mainnet-capable runner with the same adapter interface.
 
 ## Credits
 

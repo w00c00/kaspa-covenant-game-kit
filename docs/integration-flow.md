@@ -83,3 +83,7 @@ const result = await kit.settleWinner({
 ```
 
 The result includes the escrow record, settlement record, and visible proof data.
+
+The visible proof uses the selected network's Kascov preset. For `tn10`, proof
+links and CLI commands target `testnet-10`; for `mainnet`, they target
+`mainnet`.

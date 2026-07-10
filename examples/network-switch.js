@@ -1,6 +1,6 @@
 "use strict";
 
-const { KaspaCovenantGameKit, networkSwitchConfig } = require("../src");
+const { KaspaCovenantGameKit, kascovTraceCommand, networkSwitchConfig } = require("../src");
 
 const kit = new KaspaCovenantGameKit({
   networkId: process.env.KASPA_COVENANT_NETWORK || "tn10",
@@ -11,6 +11,10 @@ console.log(
   JSON.stringify(
     {
       selected: kit.network,
+      kascov: {
+        traceCommand: kascovTraceCommand("<covenant-id>", kit.network),
+        liveDataUrl: kit.network.kascovLiveDataUrl
+      },
       switch: networkSwitchConfig({
         networkId: kit.networkId,
         allowMainnet: kit.networkId === "mainnet"

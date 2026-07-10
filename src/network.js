@@ -37,7 +37,9 @@ function applyNetworkEnvOverrides(network) {
     ...network,
     restApi: process.env[`${prefix}_REST_API`] || network.restApi,
     explorerApi: process.env[`${prefix}_EXPLORER_API`] || network.explorerApi,
-    kascovExplorerBase: process.env[`${prefix}_KASCOV_EXPLORER`] || network.kascovExplorerBase
+    kascovNetworkId: process.env[`${prefix}_KASCOV_NETWORK`] || network.kascovNetworkId,
+    kascovExplorerBase: process.env[`${prefix}_KASCOV_EXPLORER`] || network.kascovExplorerBase,
+    kascovLiveDataUrl: process.env[`${prefix}_KASCOV_LIVE_DATA`] || network.kascovLiveDataUrl
   };
 }
 
@@ -70,10 +72,21 @@ function networkSwitchConfig(options = {}) {
   };
 }
 
+function kascovCliNetwork(network) {
+  return network?.kascovNetworkId || (network?.id === "tn10" ? "testnet-10" : network?.id || "mainnet");
+}
+
+function kascovTraceCommand(covenantId, network) {
+  const id = covenantId || "<covenant-id>";
+  return `kascov --network ${kascovCliNetwork(network)} trace ${id}`;
+}
+
 module.exports = {
   ENV_ALLOW_MAINNET_KEY,
   ENV_NETWORK_KEY,
   mainnetAllowed,
+  kascovCliNetwork,
+  kascovTraceCommand,
   networkIdFrom,
   networkSwitchConfig,
   normalizeNetworkId,
