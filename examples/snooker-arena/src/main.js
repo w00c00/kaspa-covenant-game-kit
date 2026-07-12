@@ -209,7 +209,15 @@ function applyLanguage() {
   $("#copy-room").setAttribute("aria-label", tr("复制房间号", "Copy room code"));
   if (roomId) $("#copy-room").innerHTML = `${tr("私人房", "PRIVATE ROOM")} · ${roomId} ${icon("copy")}`;
   $(".lobby-hero h1").innerHTML = tr("链上斯诺克<br/><span>每一杆，都算数。</span>", "ON-CHAIN SNOOKER<br/><span>EVERY SHOT COUNTS.</span>");
-  setNodeText(".lobby-hero > p", "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。", "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner.");
+  setNodeText(
+    ".lobby-hero > p",
+    model.config.network.isTestnet
+      ? "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。"
+      : "创建房间、双方锁定少量真实 KAS、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。",
+    model.config.network.isTestnet
+      ? "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner."
+      : "Create a room, lock a small amount of real KAS, play under automatic rules, and let the Covenant release the prize to the winner."
+  );
   setNodeText("#create-room", "创建对战房间", "Create match");
   for (const option of $("#create-stake").options) option.textContent = `${option.value} ${currencySymbol()} / ${tr("人", "player")}`;
   $("#join-code").placeholder = tr("输入房间号 KSP-XXXXX", "Enter room code KSP-XXXXX");
@@ -1094,7 +1102,7 @@ async function loadConfig() {
       model.fundingCode = "";
       showMessage(tr("结算手续费已到账，主网锁仓已自动启用", "Settlement funding confirmed; mainnet escrow is now enabled"));
     }
-    if (model.currentRoom) renderRoom(model.currentRoom);
+    applyLanguage();
   } catch {
     showMessage(tr("结算服务暂未连接，游戏仍可离线试玩", "Settlement service is offline; local practice remains available"), "foul");
   }
