@@ -29,6 +29,8 @@ Set `SILVERC_BIN` to that binary and
 `KASPA_COVENANT_MAINNET_SILVERC_SHA256` to the recorded hash. The binary hash is
 platform/build specific; generate the source-linked program fingerprint on the
 same deployment artifact that will construct mainnet drafts.
+`scripts/build-silverc.sh` and the `Mainnet artifacts build` workflow provide
+the corresponding pinned local and Linux builds.
 
 ## Implemented closed-test guards
 
