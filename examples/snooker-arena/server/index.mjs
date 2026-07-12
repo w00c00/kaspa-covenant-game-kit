@@ -77,12 +77,16 @@ async function requireSettlementFunding() {
   if (!settlementFunding) return null;
   const funding = await settlementFunding.status({ force: true });
   if (!funding.ready) {
-    const error = new Error(
-      funding.code === "VERIFIER_FUNDING_REQUIRED"
-        ? `结算验证者资金不足，需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO`
-        : "暂时无法验证结算手续费余额，请稍后重试"
-    );
+    const messageZh = funding.code === "VERIFIER_FUNDING_REQUIRED"
+      ? `结算验证者资金不足，需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO`
+      : "暂时无法验证结算手续费余额，请稍后重试";
+    const messageEn = funding.code === "VERIFIER_FUNDING_REQUIRED"
+      ? `Settlement verifier needs one UTXO of at least ${funding.minimumUtxoKas} KAS`
+      : "Unable to verify settlement fee funding; please retry shortly";
+    const error = new Error(messageZh);
     error.code = funding.code;
+    error.messageEn = messageEn;
+    error.operational = true;
     error.status = 503;
     throw error;
   }
@@ -535,7 +539,7 @@ io.on("connection", (socket) => {
     } catch (error) {
       player.lockStatus = "unsigned";
       io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: false, error: error.message || String(error) });
+      acknowledge?.({ ok: false, error: error.message || String(error), errorEn: error.messageEn, code: error.code });
     }
   });
 
@@ -549,7 +553,7 @@ io.on("connection", (socket) => {
     try {
       await requireSettlementFunding();
     } catch (error) {
-      return acknowledge?.({ ok: false, error: error.message || String(error), code: error.code });
+      return acknowledge?.({ ok: false, error: error.message || String(error), errorEn: error.messageEn, code: error.code });
     }
     try {
       const result = await submitRoomSignature(room, player, signedTransactionSafeJson);
@@ -837,9 +841,11 @@ app.get("/{*splat}", (req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   const status = error.status || 400;
-  if (status >= 500) console.error(error);
+  if (status >= 500 && !error.operational) console.error(error);
   res.status(status).json({
     error: error.message || "Request failed",
+    errorEn: error.messageEn || error.message || "Request failed",
+    code: error.code || "REQUEST_FAILED",
     status: error.intent?.status || "error",
     intent: error.intent || null
   });

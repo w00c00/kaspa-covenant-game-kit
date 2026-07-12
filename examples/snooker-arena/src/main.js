@@ -1029,8 +1029,13 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) }
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(payload.error || `HTTP ${response.status}`), { payload });
+  const errorMessage = model.language === "en" ? payload.errorEn || payload.error : payload.error;
+  if (!response.ok) throw Object.assign(new Error(errorMessage || `HTTP ${response.status}`), { payload });
   return payload;
+}
+
+function responseError(result, fallbackZh, fallbackEn) {
+  return (model.language === "en" ? result?.errorEn || result?.error : result?.error) || tr(fallbackZh, fallbackEn);
 }
 
 function socketRequest(event, payload, timeoutMs = 120000) {
@@ -1321,7 +1326,7 @@ $("#lock-stake").addEventListener("click", async () => {
   button.textContent = tr("正在构建双方锁仓交易…", "Building two-party escrow…");
   try {
     const prepared = await socketRequest("room:lock", { roomId });
-    if (!prepared.ok) throw new Error(prepared.error || tr("锁仓草案创建失败", "Failed to create escrow draft"));
+    if (!prepared.ok) throw new Error(responseError(prepared, "锁仓草案创建失败", "Failed to create escrow draft"));
     if (prepared.status === "locked-on-chain") {
       showMessage(tr("锁仓交易已经上链", "Escrow transaction is on-chain"), "score");
       return;
@@ -1348,7 +1353,7 @@ $("#lock-stake").addEventListener("click", async () => {
       : signedResult?.signedTransactionSafeJson || signedResult?.txJsonString || "";
     button.textContent = tr("正在合并签名并广播…", "Merging signatures and broadcasting…");
     const submitted = await socketRequest("room:lock:submit", { roomId, signedTransactionSafeJson });
-    if (!submitted.ok) throw new Error(submitted.error || tr("签名提交失败", "Signature submission failed"));
+    if (!submitted.ok) throw new Error(responseError(submitted, "签名提交失败", "Signature submission failed"));
     if (submitted.status === "locked-on-chain") showMessage(tr(`双方押金已在 ${networkShortName()} 上锁定`, `Both stakes are locked on ${networkShortName()}`), "score");
     else if (submitted.status === "confirming-lock-on-chain") showMessage(tr("锁仓交易已广播，等待链上确认", "Escrow broadcast; waiting for confirmation"), "score");
     else showMessage(tr("签名已提交，等待对手签名后自动广播", "Signature submitted; broadcast starts after opponent signs"), "score");
