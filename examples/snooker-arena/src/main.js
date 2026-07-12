@@ -40,7 +40,10 @@ const model = {
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
-const socket = io({ transports: ["websocket", "polling"] });
+// Register every listener before opening the connection. With autoConnect on,
+// a fast cached page could receive both `connect` and the initial lobby list
+// before the handlers near the middle of this module had been installed.
+const socket = io({ transports: ["websocket", "polling"], autoConnect: false });
 const coarsePointer = matchMedia("(any-pointer: coarse)");
 
 document.querySelector("#app").innerHTML = `
@@ -178,6 +181,7 @@ const $ = (selector) => document.querySelector(selector);
 const canvas = $("#game-canvas");
 let clockTimer = null;
 let messageTimer = null;
+let lobbyRefreshTimer = null;
 
 function setNodeText(selector, zh, en) {
   const node = $(selector);
@@ -420,6 +424,15 @@ function showView(view) {
   $("#room-screen").hidden = view !== "room";
   $("#game-screen").hidden = view !== "game";
   $("#copy-room").hidden = view === "lobby" || !roomId;
+  clearInterval(lobbyRefreshTimer);
+  lobbyRefreshTimer = null;
+  if (view === "lobby") {
+    const refresh = () => {
+      if (socket.connected) socket.emit("lobby:list", {}, (result) => renderLobbyRooms(result?.rooms || []));
+    };
+    refresh();
+    lobbyRefreshTimer = setInterval(refresh, 5_000);
+  }
 }
 
 function renderLobbyRooms(rooms = []) {
@@ -509,6 +522,15 @@ socket.on("connect", () => {
   if (roomId) joinRoom(roomId);
 });
 socket.on("lobby:rooms", renderLobbyRooms);
+socket.on("room:player-joined", ({ player }) => {
+  showMessage(tr(`${player?.name || `Player ${Number(player?.seat) + 1}`} 已进入房间`, `${player?.name || `Player ${Number(player?.seat) + 1}`} joined the room`), "score");
+});
+socket.on("room:player-signed", ({ seat }) => {
+  showMessage(tr(`Player ${Number(seat) + 1} 已提交锁仓签名 · 等待另一方`, `Player ${Number(seat) + 1} signed the escrow · Waiting for the other player`), "score");
+});
+socket.on("room:escrow-locked", ({ lockTxid }) => {
+  showMessage(tr(`双方资金已锁仓并确认${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`, `Both stakes are locked and confirmed${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`), "score");
+});
 socket.on("room:state", (room) => {
   if (roomId && room.roomId === roomId && room.status === "waiting") updateWaitingRoom(room);
   model.livePlayers = room.players || [];
@@ -1238,3 +1260,4 @@ $("#copy-room").addEventListener("click", async () => {
   await navigator.clipboard?.writeText(shareUrl);
   showMessage(tr(`房间链接 ${roomId} 已复制`, `Room link ${roomId} copied`), "score");
 });
+socket.connect();

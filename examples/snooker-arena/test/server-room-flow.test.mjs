@@ -43,8 +43,15 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   assert.equal(created.ok, true);
   assert.equal(created.seat, 0);
   const roomId = created.room.roomId;
+  const lobby = await request(second, "lobby:list", {});
+  assert.equal(lobby.ok, true);
+  assert.equal(lobby.rooms.some((room) => room.roomId === roomId), true);
+  const playerJoinedEvent = once(first, "room:player-joined");
   const joined = await request(second, "room:join", { roomId, playerId: "PLAYER-B", name: "B" });
+  const playerJoined = await playerJoinedEvent;
   assert.equal(joined.seat, 1);
+  assert.equal(playerJoined.player.seat, 1);
+  assert.equal(playerJoined.player.name, "B");
   const watched = await request(spectator, "room:join", { roomId, playerId: "WATCHER", name: "Watcher" });
   assert.equal(watched.role, "spectator");
 

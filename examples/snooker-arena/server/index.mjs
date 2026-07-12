@@ -205,6 +205,10 @@ async function confirmRoomEscrow(room) {
         room.escrow.error = "";
         room.players.forEach((item) => { item.locked = true; item.lockStatus = "locked"; });
         io.to(room.id).emit("room:state", publicRoom(room.id));
+        io.to(room.id).emit("room:escrow-locked", {
+          lockTxid: room.escrow.record?.deploy?.txid || "",
+          room: publicRoom(room.id)
+        });
         return true;
       }
       await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -239,6 +243,12 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
   socket.data.role = role;
   socket.join(room.id);
   io.to(room.id).emit("room:state", publicRoom(room.id));
+  if (!previous && role === "player") {
+    socket.to(room.id).emit("room:player-joined", {
+      player: { playerId, seat, name, address, online: true },
+      room: publicRoom(room.id)
+    });
+  }
   emitLobby();
   return { ok: true, role, seat, room: publicRoom(room.id) };
 }
@@ -465,6 +475,7 @@ io.on("connection", (socket) => {
     try {
       const result = await submitRoomSignature(room, player, signedTransactionSafeJson);
       io.to(roomId).emit("room:state", publicRoom(roomId));
+      socket.to(roomId).emit("room:player-signed", { seat: player.seat, room: publicRoom(roomId) });
       acknowledge?.({ ok: true, status: room.escrow.status, escrow: publicRoom(roomId).escrow, merge: result.merge });
     } catch (error) {
       player.lockStatus = "unsigned";
