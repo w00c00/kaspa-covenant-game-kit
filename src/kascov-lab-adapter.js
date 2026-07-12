@@ -248,11 +248,10 @@ class KascovLabAdapter {
     const run = await this.run(["--help"], timeoutMs);
     const help = `${run.stdout || ""}\n${run.stderr || ""}`;
     if (!/settle-escrow/i.test(help)) throw new Error("Settlement runner does not expose settle-escrow capability");
-    let durableJournal = false;
+    const capability = await this.run(["settle-escrow", "--help"], timeoutMs);
+    const capabilityHelp = `${capability.stdout || ""}\n${capability.stderr || ""}`;
+    const durableJournal = /--journal/i.test(capabilityHelp);
     if (manifest.network === "mainnet") {
-      const capability = await this.run(["settle-escrow", "--help"], timeoutMs);
-      const capabilityHelp = `${capability.stdout || ""}\n${capability.stderr || ""}`;
-      durableJournal = /--journal/i.test(capabilityHelp);
       if (!/mainnet/i.test(help) || !/--network/i.test(capabilityHelp) || !/mainnet/i.test(capabilityHelp) || !/--journal/i.test(capabilityHelp) ||
           /testnet-10\s+only/i.test(help) || /mainnet.{0,24}(?:unsupported|disabled|not supported)/i.test(help)) {
         const error = new Error("Settlement runner help does not prove explicit mainnet settlement capability");
