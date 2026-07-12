@@ -1,6 +1,7 @@
 "use strict";
 
-const { covenantStoryUrl, explorerTxUrl, nowIso, randomId } = require("./utils");
+const os = require("node:os");
+const { covenantStoryUrl, explorerTxUrl, nowIso, sha256Hex } = require("./utils");
 
 class SettlementEngine {
   constructor(options = {}) {
@@ -9,6 +10,8 @@ class SettlementEngine {
     this.proofBuilder = options.proofBuilder;
     this.kascovLab = options.kascovLab;
     this.inFlight = new Map();
+    this.workerId = options.workerId || `${os.hostname()}:${process.pid}:${sha256Hex(String(Math.random())).slice(0, 12)}`;
+    this.settlementLeaseTtlMs = Math.max(180_000, Number(options.settlementLeaseTtlMs) || 300_000);
     if (!this.escrowEngine) throw new Error("SettlementEngine requires escrowEngine");
     if (!this.proofBuilder) throw new Error("SettlementEngine requires proofBuilder");
   }
@@ -26,7 +29,11 @@ class SettlementEngine {
     covenantProof.programHash = escrowRecord?.programHash || "";
     covenantProof.programProfileFingerprint = escrowRecord?.programProfile?.fingerprint || "";
     const settlement = {
-      id: randomId(`GAME-${match.id || "MATCH"}`),
+      id: `GAME-${sha256Hex([
+        escrowRecord?.id || this.escrowEngine.escrowId(match),
+        match.id || "MATCH",
+        match.roundId || ""
+      ].join("|")).slice(0, 24).toUpperCase()}`,
       matchId: match.id,
       roomId: match.roomId || match.id,
       game: match.game,
@@ -44,7 +51,19 @@ class SettlementEngine {
       chainCovenantId: escrowRecord?.deploy?.covenantId || "",
       releaseTo: hasChainEscrow ? this.escrowEngine.releaseSideForWinner(escrowRecord, winnerAddress) : ""
     };
-    return this.store?.upsertSettlement(settlement) || settlement;
+    return this.store?.createSettlementIfAbsent?.(settlement) || this.store?.upsertSettlement(settlement) || settlement;
+  }
+
+  assertSettlementDecision(settlement, { match, winnerAddress }) {
+    const conflicts = [];
+    if (settlement.winnerAddress && settlement.winnerAddress !== winnerAddress) conflicts.push("winnerAddress");
+    if (settlement.matchId && settlement.matchId !== match.id) conflicts.push("matchId");
+    if ((settlement.roundId || "") !== (match.roundId || "")) conflicts.push("roundId");
+    if (conflicts.length) {
+      const error = new Error(`Settlement decision conflicts with the persisted result: ${conflicts.join(", ")}`);
+      error.code = "SETTLEMENT_DECISION_CONFLICT";
+      throw error;
+    }
   }
 
   settleWinner(input) {
@@ -68,6 +87,7 @@ class SettlementEngine {
         (item.roundId || "") === (match.roundId || "")
       ) ||
       this.createPendingSettlement({ match, winnerAddress, reason, gameState, escrowRecord });
+    this.assertSettlementDecision(pending, { match, winnerAddress });
 
     if (!this.escrowEngine.isEscrowDeployed(escrowRecord)) {
       return {
@@ -105,14 +125,27 @@ class SettlementEngine {
     }
 
     const releaseTo = this.escrowEngine.releaseSideForWinner(escrowRecord, winnerAddress);
-    const started = this.store?.upsertEscrow({
-      ...escrowRecord,
-      status: "settling",
-      releaseTo,
-      settlementId: pending.id
-    });
+    const lease = typeof this.store?.acquireSettlementLease === "function"
+      ? this.store.acquireSettlementLease(pending.id, { ownerId: this.workerId, ttlMs: this.settlementLeaseTtlMs })
+      : { token: "in-process-only" };
+    if (!lease) {
+      const currentSettlement = this.store?.findSettlement((item) => item.id === pending.id) || pending;
+      const currentEscrow = this.findEscrowForMatch(match) || escrowRecord;
+      return {
+        settlement: currentSettlement,
+        escrow: currentEscrow,
+        visible: this.proofBuilder.visibleSettlement(currentSettlement, currentEscrow),
+        executionDeferred: true
+      };
+    }
 
     try {
+      const started = this.store?.upsertEscrow({
+        ...escrowRecord,
+        status: "settling",
+        releaseTo,
+        settlementId: pending.id
+      });
       const settle = await this.kascovLab.settleEscrow({
         programHex: escrowRecord.programHex,
         releaseTo,
@@ -159,6 +192,8 @@ class SettlementEngine {
         escrow: failedEscrow,
         visible: this.proofBuilder.visibleSettlement(failedSettlement, failedEscrow)
       };
+    } finally {
+      if (lease.token !== "in-process-only") this.store?.releaseSettlementLease?.(pending.id, lease.token);
     }
   }
 }

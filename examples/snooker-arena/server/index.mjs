@@ -11,6 +11,7 @@ import { Server } from "socket.io";
 import { SnookerEngine } from "../src/game-engine.js";
 import { FaucetService } from "./faucet-service.mjs";
 import { prepareRematchRoom, rematchReady, settlementComplete } from "./rematch.mjs";
+import { SettlementFundingMonitor } from "./settlement-funding.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
 
 const require = createRequire(import.meta.url);
@@ -66,6 +67,27 @@ const kit = new KaspaCovenantGameKit({
   kascovLabApprovedNetworks: [mainnetRequested ? "mainnet" : "tn10"],
   kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile
 });
+const settlementFunding = mainnetRequested ? new SettlementFundingMonitor({
+  address: verifier.address,
+  restApi: kit.network.restApi,
+  cacheMs: 15_000
+}) : null;
+
+async function requireSettlementFunding() {
+  if (!settlementFunding) return null;
+  const funding = await settlementFunding.status({ force: true });
+  if (!funding.ready) {
+    const error = new Error(
+      funding.code === "VERIFIER_FUNDING_REQUIRED"
+        ? `结算验证者资金不足，需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO`
+        : "暂时无法验证结算手续费余额，请稍后重试"
+    );
+    error.code = funding.code;
+    error.status = 503;
+    throw error;
+  }
+  return funding;
+}
 
 let sourceCompilerHealth = { ready: false, reason: mainnetRequested ? "compiler-not-configured" : "not-required-on-tn10" };
 if (mainnetRequested) {
@@ -493,6 +515,7 @@ io.on("connection", (socket) => {
       return acknowledge?.({ ok: true, status: room.escrow?.record?.deploy?.txid ? "confirming-lock-on-chain" : "waiting-for-opponent-signature", room: publicRoom(roomId) });
     }
     try {
+      await requireSettlementFunding();
       const draft = await prepareRoomEscrow(room);
       const signer = draft.signers.find((item) => item.address === player.address);
       if (!signer) throw new Error("当前钱包不在该锁仓交易中");
@@ -522,6 +545,11 @@ io.on("connection", (socket) => {
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
     if (typeof signedTransactionSafeJson !== "string" || signedTransactionSafeJson.length < 100) {
       return acknowledge?.({ ok: false, error: "钱包没有返回有效的签名交易" });
+    }
+    try {
+      await requireSettlementFunding();
+    } catch (error) {
+      return acknowledge?.({ ok: false, error: error.message || String(error), code: error.code });
     }
     try {
       const result = await submitRoomSignature(room, player, signedTransactionSafeJson);
@@ -681,10 +709,14 @@ function matchFrom(body = {}) {
   return { room, state, match: kit.toMatch({ game: "snooker", room, state }) };
 }
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, network: kit.network }));
+app.get("/api/health", async (_req, res) => {
+  const funding = settlementFunding ? await settlementFunding.status() : null;
+  res.json({ ok: true, network: kit.network, settlementFunding: funding });
+});
 
-app.get("/api/config", (_req, res) => {
+app.get("/api/config", async (_req, res) => {
   const isMainnet = kit.network.id === "mainnet";
+  const funding = settlementFunding ? await settlementFunding.status() : { ready: true, code: "NOT_REQUIRED" };
   const mainnetStakeCap = Math.min(1, Number(mainnetMaxStakeKas));
   const mainnetStakeOptions = [...new Set([0.001, 0.005, 0.01, 0.05, 0.1, mainnetStakeCap])]
     .filter((stake) => Number.isFinite(stake) && stake > 0 && stake <= mainnetStakeCap)
@@ -700,6 +732,10 @@ app.get("/api/config", (_req, res) => {
         mainnetCapable: settlementRunnerHealth.mainnetCapable
       }
     : { ready: false, code: settlementRunnerHealth.code || "RUNNER_UNAVAILABLE", reason: settlementRunnerHealth.reason };
+  const staticEscrowReady = settlementRunnerHealth.ready && (!isMainnet || (
+    sourceCompilerHealth.ready && kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved
+  ));
+  const escrowReady = staticEscrowReady && funding.ready;
   res.json({
     network: {
       id: kit.network.id,
@@ -709,10 +745,8 @@ app.get("/api/config", (_req, res) => {
       addressPrefix: kit.network.addressPrefix,
       explorer: kit.network.kascovExplorerBase
     },
-    chainMode: settlementRunnerHealth.ready ? "live" : "unavailable",
-    escrowReady: settlementRunnerHealth.ready && (!isMainnet || (
-      sourceCompilerHealth.ready && kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved
-    )),
+    chainMode: !staticEscrowReady ? "unavailable" : funding.ready ? "live" : "needs-funding",
+    escrowReady,
     faucetAvailable: kit.network.isTestnet,
     stakeOptions: isMainnet ? mainnetStakeOptions : [5, 25, 50, 100],
     mainnetGuarded: true,
@@ -731,6 +765,7 @@ app.get("/api/config", (_req, res) => {
       } : { ready: false, reason: sourceCompilerHealth.reason },
       settlementRunnerApproved: !isMainnet || mainnetSettlementRunnerApproved,
       settlementRunnerHealth: publicRunnerHealth,
+      settlementFunding: funding,
       maxStakeKas: isMainnet ? Number(mainnetMaxStakeKas) : null
     }
   });
@@ -764,6 +799,7 @@ app.post("/api/escrow/intent", (req, res, next) => {
 
 app.post("/api/escrow/draft", async (req, res, next) => {
   try {
+    await requireSettlementFunding();
     const { match } = matchFrom(req.body);
     const draft = await kit.buildDeployDraft({ match });
     res.json({ match, draft });

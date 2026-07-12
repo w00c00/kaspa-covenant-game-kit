@@ -38,11 +38,17 @@ const model = {
   settlementPoll: null,
   winnerSeat: null,
   rematchRequested: false,
+  fundingCode: "",
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
 const currencySymbol = () => model.config?.network?.symbol || "TKAS";
 const networkShortName = () => String(model.config?.network?.id || "tn10").toUpperCase();
+const chainModeLabel = () => model.config.chainMode === "live"
+  ? `${networkShortName()} LIVE`
+  : model.config.chainMode === "needs-funding"
+    ? tr("等待结算手续费", "SETTLEMENT FUNDING REQUIRED")
+    : "SETTLEMENT OFFLINE";
 // Register every listener before opening the connection. With autoConnect on,
 // a fast cached page could receive both `connect` and the initial lobby list
 // before the handlers near the middle of this module had been installed.
@@ -489,7 +495,9 @@ function updateWaitingRoom(room) {
   const escrowUnavailable = model.config.escrowReady === false;
   $("#lock-stake").disabled = escrowUnavailable || !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
   $("#lock-stake").textContent = escrowUnavailable
-    ? tr("链上安全配置未就绪", "On-chain safety configuration incomplete")
+    ? (model.config.chainMode === "needs-funding"
+        ? tr("等待结算手续费到账", "Waiting for settlement funding")
+        : tr("链上安全配置未就绪", "On-chain safety configuration incomplete"))
     : local?.locked
     ? tr("锁仓交易已上链", "Escrow confirmed on-chain")
     : local?.lockStatus === "signed"
@@ -513,7 +521,7 @@ function enterRoom(result) {
   model.livePlayers = room.players || [];
   model.practiceMode = Boolean(room.practiceMode);
   model.stakeKas = Number(room.stakeKas || 0);
-  $("#chain-mode").textContent = model.config.chainMode === "live" ? `${model.config.network.id.toUpperCase()} LIVE` : "SETTLEMENT OFFLINE";
+  $("#chain-mode").textContent = chainModeLabel();
   $("#pot-value").textContent = String(model.stakeKas * 2);
   $(".pot-label").textContent = tr("本局奖池", "Prize pool");
   $(".pot-meta span:first-child").textContent = `${tr("每人", "Each")} ${model.stakeKas} ${currencySymbol()}`;
@@ -1037,27 +1045,45 @@ function socketRequest(event, payload, timeoutMs = 120000) {
 
 async function loadConfig() {
   try {
+    const previousReady = model.config?.escrowReady;
+    const previousStake = Number($("#create-stake").value || model.stakeKas);
     model.config = await api("/api/config");
     const network = model.config.network;
     $("#network-name").textContent = `${network.id.toUpperCase()} · ${network.isTestnet ? "TESTNET" : "MAINNET"}`;
     $(".lobby-kicker").innerHTML = `<i class="network-dot"></i> KASPA ${network.id.toUpperCase()} · AUTOMATIC SETTLEMENT`;
     $("#pot-symbol").textContent = network.symbol;
-    $("#chain-mode").textContent = model.config.chainMode === "live" ? `${network.id.toUpperCase()} LIVE` : "SETTLEMENT OFFLINE";
+    if (!model.practiceMode) $("#chain-mode").textContent = chainModeLabel();
     const options = (model.config.stakeOptions || []).filter((value, index, values) => Number(value) > 0 && values.indexOf(value) === index);
     if (options.length) {
-      $("#create-stake").innerHTML = options.map((value, index) => `<option value="${value}" ${index === Math.min(2, options.length - 1) ? "selected" : ""}>${value} ${network.symbol} / ${tr("人", "player")}</option>`).join("");
+      const selectedStake = options.includes(previousStake) ? previousStake : options[Math.min(2, options.length - 1)];
+      $("#create-stake").innerHTML = options.map((value) => `<option value="${value}" ${value === selectedStake ? "selected" : ""}>${value} ${network.symbol} / ${tr("人", "player")}</option>`).join("");
       model.stakeKas = Number($("#create-stake").value);
     }
     $(".faucet-panel").hidden = !model.config.faucetAvailable;
     if (model.config.faucetAvailable) await loadFaucet();
     if (!network.isTestnet && !model.config.escrowReady) {
-      showMessage(tr("主网安全配置未通过，已禁止锁仓", "Mainnet safety checks failed; escrow is disabled"), "foul");
+      const funding = model.config.mainnetReadiness?.settlementFunding;
+      const fundingCode = funding?.code || "";
+      if (previousReady !== false || model.fundingCode !== fundingCode) {
+        showMessage(
+          fundingCode === "VERIFIER_FUNDING_REQUIRED"
+            ? tr(`结算钱包余额不足：需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO，到账后页面会自动启用锁仓`, `Settlement wallet needs one UTXO of at least ${funding.minimumUtxoKas} KAS. Escrow will enable automatically after funding.`)
+            : tr("主网安全配置或链上余额检查未通过，已禁止锁仓", "Mainnet safety or funding checks failed; escrow is disabled"),
+          "foul"
+        );
+      }
+      model.fundingCode = fundingCode;
+    } else if (!network.isTestnet && previousReady === false && model.config.escrowReady) {
+      model.fundingCode = "";
+      showMessage(tr("结算手续费已到账，主网锁仓已自动启用", "Settlement funding confirmed; mainnet escrow is now enabled"));
     }
+    if (model.currentRoom) renderRoom(model.currentRoom);
   } catch {
     showMessage(tr("结算服务暂未连接，游戏仍可离线试玩", "Settlement service is offline; local practice remains available"), "foul");
   }
 }
 loadConfig();
+setInterval(loadConfig, 15_000);
 
 function playersPayload() {
   if (model.livePlayers.length === 2) {

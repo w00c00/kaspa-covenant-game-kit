@@ -137,6 +137,9 @@ export declare class JsonStore {
   listSettlements(): unknown[];
   upsertEscrow<T = unknown>(record: T & { id: string }): T;
   upsertSettlement<T = unknown>(record: T & { id: string }): T;
+  createSettlementIfAbsent<T = unknown>(record: T & { id: string }): T;
+  acquireSettlementLease(settlementId: string, options: { ownerId: string; ttlMs?: number }): { ownerId: string; token: string; acquiredAt: string; expiresAt: string } | null;
+  releaseSettlementLease(settlementId: string, token: string): boolean;
   findEscrow<T = unknown>(predicate: (record: T) => boolean): T | null;
   findSettlement<T = unknown>(predicate: (record: T) => boolean): T | null;
 }

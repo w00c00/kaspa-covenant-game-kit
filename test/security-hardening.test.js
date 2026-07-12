@@ -544,6 +544,98 @@ test("concurrent and repeated winner settlement runs only once per covenant", as
   assert.equal(repeated.settlement.status, "settled-on-chain");
 });
 
+test("separate store instances use one durable settlement lease and preserve the first winner", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-settlement-lease-"));
+  const file = path.join(directory, "ledger.json");
+  try {
+    const firstStore = new JsonStore(file);
+    const secondStore = new JsonStore(file);
+    const firstEscrow = new CovenantEscrowEngine({ store: firstStore, network: DEFAULT_NETWORKS.tn10 });
+    const secondEscrow = new CovenantEscrowEngine({ store: secondStore, network: DEFAULT_NETWORKS.tn10 });
+    const proofBuilder = new ProofBuilder({ network: DEFAULT_NETWORKS.tn10, contractSource: "contract Test {}" });
+    let calls = 0;
+    const runner = {
+      async settleEscrow() {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { txid: "a".repeat(64), releasedKas: 2 };
+      }
+    };
+    const firstEngine = new SettlementEngine({
+      escrowEngine: firstEscrow,
+      proofBuilder,
+      store: firstStore,
+      kascovLab: runner,
+      workerId: "worker-one"
+    });
+    const secondEngine = new SettlementEngine({
+      escrowEngine: secondEscrow,
+      proofBuilder,
+      store: secondStore,
+      kascovLab: runner,
+      workerId: "worker-two"
+    });
+    const match = {
+      id: "CROSS-PROCESS-MATCH",
+      roundId: "ROUND-1",
+      game: "duel",
+      stakeKas: 1,
+      players: [
+        { seat: 0, role: "buyer", address: "buyer" },
+        { seat: 1, role: "seller", address: "seller" }
+      ]
+    };
+    firstStore.upsertEscrow({
+      id: firstEscrow.escrowId(match),
+      matchId: match.id,
+      roundId: match.roundId,
+      programHex: "00",
+      status: "deployed-player-funded-on-chain",
+      buyer: match.players[0],
+      seller: match.players[1],
+      deploy: { covenantId: "b".repeat(64), txid: "c".repeat(64) }
+    });
+
+    await Promise.all([
+      firstEngine.settleWinner({ match, winnerAddress: "seller" }),
+      secondEngine.settleWinner({ match, winnerAddress: "seller" })
+    ]);
+
+    const loaded = new JsonStore(file);
+    const settlements = loaded.listSettlements();
+    assert.equal(calls, 1);
+    assert.equal(settlements.length, 1);
+    assert.equal(settlements[0].winnerAddress, "seller");
+    assert.equal(settlements[0].status, "settled-on-chain");
+    assert.equal(settlements[0].executionLease, undefined);
+    await assert.rejects(
+      () => secondEngine.settleWinner({ match, winnerAddress: "buyer" }),
+      (error) => error.code === "SETTLEMENT_DECISION_CONFLICT"
+    );
+    assert.equal(calls, 1);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("expired settlement leases can be reclaimed but active leases cannot be stolen", () => {
+  const store = new JsonStore();
+  store.upsertSettlement({ id: "SETTLEMENT-LEASE", status: "pending-chain-covenant-settlement" });
+  const first = store.acquireSettlementLease("SETTLEMENT-LEASE", { ownerId: "worker-one", ttlMs: 60_000 });
+  assert.ok(first?.token);
+  assert.equal(store.acquireSettlementLease("SETTLEMENT-LEASE", { ownerId: "worker-two", ttlMs: 60_000 }), null);
+  assert.equal(store.releaseSettlementLease("SETTLEMENT-LEASE", "wrong-token"), false);
+  assert.equal(store.releaseSettlementLease("SETTLEMENT-LEASE", first.token), true);
+  const second = store.acquireSettlementLease("SETTLEMENT-LEASE", { ownerId: "worker-two", ttlMs: 60_000 });
+  assert.ok(second?.token);
+  store.upsertSettlement({
+    id: "SETTLEMENT-LEASE",
+    executionLease: { ...second, expiresAt: new Date(Date.now() - 1_000).toISOString() }
+  });
+  const reclaimed = store.acquireSettlementLease("SETTLEMENT-LEASE", { ownerId: "worker-three", ttlMs: 60_000 });
+  assert.equal(reclaimed?.ownerId, "worker-three");
+});
+
 test("JsonStore writes atomically and refuses to silently erase a corrupt ledger", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-store-"));
   const file = path.join(directory, "ledger.json");
