@@ -37,6 +37,7 @@ const model = {
   settlement: null,
   settlementPoll: null,
   winnerSeat: null,
+  rematchRequested: false,
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
@@ -115,6 +116,11 @@ document.querySelector("#app").innerHTML = `
           <div><div class="player-role">等待击球</div><div class="player-name" id="player-1-name">等待对手</div><div class="player-address" id="player-1-address">分享房间链接邀请好友</div></div>
           <div class="avatar">W0<i class="online"></i></div>
         </div>
+      </section>
+
+      <section class="post-match-bar" id="post-match-bar" hidden>
+        <div><small id="post-match-kicker">FRAME COMPLETE</small><strong id="post-match-title">比赛已结束</strong><span id="post-match-status">正在确认链上结算</span></div>
+        <div class="post-match-actions"><button class="outline-button" id="post-match-exit">退出房间</button><button class="primary-button" id="post-match-rematch">预约下一局</button></div>
       </section>
 
       <section class="content-grid">
@@ -244,7 +250,8 @@ function applyLanguage() {
   if (model.lastState) updateState(model.lastState);
   if (model.currentRoom?.status === "waiting") updateWaitingRoom(model.currentRoom);
   if (model.rooms) renderLobbyRooms(model.rooms);
-  if (model.settlement && $("#modal").classList.contains("open")) renderSettlementModal();
+  if (model.winnerSeat !== null) renderPostMatchBar();
+  if (model.settlement && $("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
 }
 
 function short(value, head = 11, tail = 6) {
@@ -495,9 +502,12 @@ function updateWaitingRoom(room) {
 
 function enterRoom(result) {
   if (!result?.ok) return showMessage(result?.error || tr("无法加入房间", "Unable to join room"), "foul");
-  roomId = result.room.roomId;
-  model.practiceMode = false;
-  model.stakeKas = Number(result.room.stakeKas || 0);
+  const room = result.room;
+  roomId = room.roomId;
+  model.currentRoom = room;
+  model.livePlayers = room.players || [];
+  model.practiceMode = Boolean(room.practiceMode);
+  model.stakeKas = Number(room.stakeKas || 0);
   $("#chain-mode").textContent = model.config.chainMode === "live" ? "TN10 LIVE" : "SETTLEMENT OFFLINE";
   $("#pot-value").textContent = String(model.stakeKas * 2);
   $(".pot-label").textContent = tr("本局奖池", "Prize pool");
@@ -509,8 +519,31 @@ function enterRoom(result) {
   model.liveSeat = result.seat;
   history.replaceState({}, "", `?room=${roomId}`);
   $("#copy-room").innerHTML = `${tr("私人房", "PRIVATE ROOM")} · ${roomId} ${icon("copy")}`;
+  if (room.gameSnapshot) engine.importSnapshot(room.gameSnapshot);
+  if (room.status === "playing" || room.status === "practice") {
+    model.winnerSeat = null;
+    model.rematchRequested = false;
+    hidePostMatchBar();
+    showView("game");
+    if (room.status === "playing") resetClock(room.turnDeadline);
+    else $("#shot-clock").textContent = "∞";
+    showMessage(tr("已恢复当前对局", "Current frame restored"), "score");
+    return;
+  }
+  if (room.status === "finished" || room.status === "practice-finished") {
+    model.winnerSeat = Number(room.gameState?.winner ?? room.gameSnapshot?.state?.winner ?? 0);
+    model.settlement = room.settlement;
+    model.rematchRequested = Boolean(room.rematchSeats?.includes(model.liveSeat));
+    showView("game");
+    renderPostMatchBar();
+    if (!model.practiceMode) {
+      renderSettlementModal();
+      if (!settlementDetails().done) startSettlementPolling();
+    }
+    return;
+  }
   showView("room");
-  updateWaitingRoom(result.room);
+  updateWaitingRoom(room);
 }
 
 function joinRoom(id) {
@@ -548,6 +581,9 @@ socket.on("room:state", (room) => {
 socket.on("room:game-start", ({ room, snapshot, turnDeadline, practiceMode }) => {
   model.currentRoom = room;
   model.practiceMode = Boolean(practiceMode || room?.practiceMode);
+  model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   roundId = snapshot?.state?.roundId || roundId;
   if (snapshot) engine.importSnapshot(snapshot);
   if (model.practiceMode) {
@@ -637,6 +673,66 @@ function clearSettlementPolling() {
   model.settlementPoll = null;
 }
 
+function hidePostMatchBar() {
+  $("#post-match-bar").hidden = true;
+}
+
+function renderPostMatchBar() {
+  const bar = $("#post-match-bar");
+  bar.hidden = false;
+  const button = $("#post-match-rematch");
+  if (model.practiceMode) {
+    $("#post-match-kicker").textContent = "PRACTICE COMPLETE";
+    $("#post-match-title").textContent = tr("练习局已结束", "Practice frame complete");
+    $("#post-match-status").textContent = tr("可以立即重新摆球，或退出返回大厅", "Rack again now or return to the lobby");
+    button.disabled = false;
+    button.textContent = tr("重新摆球", "Rack again");
+    return;
+  }
+  const details = settlementDetails();
+  const winnerSeat = Number(model.winnerSeat ?? 0);
+  const winner = model.livePlayers.find((player) => player.seat === winnerSeat);
+  const winnerName = winner?.playerId === playerId ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
+  $("#post-match-kicker").textContent = "FRAME COMPLETE · AUTOMATIC SETTLEMENT";
+  $("#post-match-title").textContent = tr(`${winnerName} 获胜`, `${winnerName} wins`);
+  $("#post-match-status").textContent = details.done
+    ? tr("链上结算已完成，可以开始下一局", "Settlement complete. The next frame can begin")
+    : tr("链上结算进行中，可先预约下一局", "Settlement in progress. You can reserve the next frame now");
+  button.disabled = model.rematchRequested;
+  button.textContent = model.rematchRequested
+    ? tr("已确认 · 等待对手", "Confirmed · Waiting")
+    : (details.done ? tr("再来一局", "Play again") : tr("预约下一局", "Reserve rematch"));
+}
+
+function requestRematch() {
+  if (!roomId || model.rematchRequested) return;
+  const buttons = [$("#result-rematch"), $("#post-match-rematch")].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; button.textContent = tr("正在确认…", "Confirming…"); });
+  socket.emit("game:rematch", { roomId }, (result) => {
+    if (!result?.ok) {
+      model.rematchRequested = false;
+      renderPostMatchBar();
+      if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+      showMessage(result?.error || tr("无法发起重赛", "Unable to request rematch"), "foul");
+      return;
+    }
+    if (result.started) return;
+    model.rematchRequested = true;
+    renderPostMatchBar();
+    if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+    showMessage(result.waitingForSettlement
+      ? tr("已预约下一局 · 结算完成后自动进入", "Rematch reserved · It will open after settlement")
+      : tr("重赛已确认 · 等待对手", "Rematch confirmed · Waiting for opponent"), "score");
+  });
+}
+
+function resetPracticeFrame() {
+  socket.emit("practice:reset", { roomId }, (result) => {
+    if (!result?.ok) showMessage(result?.error || tr("无法重新摆球", "Unable to rack again"), "foul");
+    else closeModal();
+  });
+}
+
 function renderSettlementModal() {
   const details = settlementDetails();
   const winnerSeat = Number(model.winnerSeat ?? 0);
@@ -647,6 +743,7 @@ function renderSettlementModal() {
   const txUrl = safeLink(details.txUrl);
   const stepClass = (complete, active = false) => complete ? "done" : (active ? "active" : "");
   openModal({
+    kind: "settlement",
     eyebrow: "AUTOMATIC SETTLEMENT · 自动结算",
     title: details.done ? tr("奖池已完成链上结算", "Prize pool settled on-chain") : tr("比赛结束 · 正在自动结算", "Frame complete · Settling automatically"),
     body: `
@@ -667,27 +764,17 @@ function renderSettlementModal() {
         ${kascovUrl ? `<a class="outline-button" href="${kascovUrl}" target="_blank" rel="noopener">${tr("在 Kascov 查看", "View on Kascov")} ↗</a>` : ""}
         ${txUrl ? `<a class="outline-button" href="${txUrl}" target="_blank" rel="noopener">${tr("查看结算交易", "View settlement transaction")} ↗</a>` : ""}
       </div>
-      <div class="modal-actions"><button class="outline-button" id="result-exit">${tr("返回大厅", "Return to lobby")}</button><button class="primary-button" id="result-rematch" ${details.done ? "" : "disabled"}>${details.done ? tr("再来一局", "Play again") : tr("结算完成后可重赛", "Rematch after settlement")}</button></div>
-      <div class="rematch-hint" id="rematch-hint">${tr("重赛需要双方确认，并为新一局重新锁仓。", "Both players must confirm and lock funds again for the new round.")}</div>`
+      <div class="modal-actions"><button class="outline-button" id="result-exit">${tr("退出房间", "Exit room")}</button><button class="primary-button" id="result-rematch" ${model.rematchRequested ? "disabled" : ""}>${model.rematchRequested ? tr("已确认 · 等待对手", "Confirmed · Waiting") : (details.done ? tr("再来一局", "Play again") : tr("预约下一局", "Reserve rematch"))}</button></div>
+      <div class="rematch-hint" id="rematch-hint">${details.done ? tr("双方确认后进入新一局，并重新锁仓。", "The next frame opens after both players confirm, then funds are locked again.") : tr("可以先确认重赛；结算完成且双方同意后，会自动进入新一局。", "You can confirm now. The next frame opens after settlement and both players agree.")}</div>`
   });
   $("#result-exit")?.addEventListener("click", () => { clearSettlementPolling(); closeModal(); leaveCurrentRoom(); });
-  $("#result-rematch")?.addEventListener("click", () => {
-    const button = $("#result-rematch");
-    button.disabled = true;
-    button.textContent = tr("等待对手确认…", "Waiting for opponent…");
-    socket.emit("game:rematch", { roomId }, (result) => {
-      if (!result?.ok) {
-        button.disabled = false;
-        button.textContent = tr("再来一局", "Play again");
-        showMessage(result?.error || tr("无法发起重赛", "Unable to request rematch"), "foul");
-      }
-    });
-  });
+  $("#result-rematch")?.addEventListener("click", requestRematch);
 }
 
 function updateSettlement(settlement) {
   if (settlement) model.settlement = settlement;
-  renderSettlementModal();
+  if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+  renderPostMatchBar();
   const details = settlementDetails();
   const step = $("#step-settle");
   step.classList.toggle("pending", !details.done);
@@ -708,19 +795,21 @@ function startSettlementPolling() {
 
 socket.on("game:finished", ({ winnerSeat, settlement, practiceMode, room }) => {
   if (practiceMode || model.practiceMode) {
+    model.winnerSeat = winnerSeat;
+    if (room) model.currentRoom = room;
+    renderPostMatchBar();
     showMessage(tr("练习局完成", "Practice frame complete"), "score");
     openModal({ eyebrow: "PRACTICE COMPLETE · 练习结束", title: tr("练习局完成", "Practice frame complete"), body: `<div class="modal-note">${tr("本局为无押注单机练习，不产生任何链上交易。", "This was a free solo practice frame. No on-chain transaction was created.")}</div><div class="modal-actions"><button class="outline-button" id="practice-exit">${tr("返回大厅", "Return to lobby")}</button><button class="primary-button" id="practice-again">${tr("重新摆球", "Rack again")}</button></div>` });
-    $("#practice-again").addEventListener("click", () => socket.emit("practice:reset", { roomId }, (result) => {
-      if (!result?.ok) showMessage(result?.error || tr("无法重新摆球", "Unable to rack again"), "foul");
-      else closeModal();
-    }));
+    $("#practice-again").addEventListener("click", resetPracticeFrame);
     $("#practice-exit").addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
     return;
   }
   model.winnerSeat = winnerSeat;
+  model.rematchRequested = Boolean(room?.rematchSeats?.includes(model.liveSeat));
   model.settlement = settlement;
   if (room) model.currentRoom = room;
   showMessage(tr(`比赛结束 · Player ${winnerSeat + 1} 获胜`, `Frame complete · Player ${winnerSeat + 1} wins`), "score");
+  renderPostMatchBar();
   renderSettlementModal();
   if (!settlementDetails().done) startSettlementPolling();
 });
@@ -728,6 +817,9 @@ socket.on("game:settlement", ({ settlement }) => {
   updateSettlement(settlement);
 });
 socket.on("game:rematch-status", ({ seats, required }) => {
+  model.rematchRequested = seats.includes(model.liveSeat);
+  if (model.currentRoom) model.currentRoom.rematchSeats = seats;
+  renderPostMatchBar();
   const hint = $("#rematch-hint");
   if (hint) hint.textContent = tr(`已确认 ${seats.length}/${required} · 等待双方同意`, `${seats.length}/${required} confirmed · Waiting for both players`);
 });
@@ -736,6 +828,8 @@ socket.on("game:rematch-start", ({ room }) => {
   closeModal();
   model.settlement = null;
   model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   model.currentRoom = room;
   model.stakeKas = Number(room?.stakeKas || model.stakeKas);
   engine.reset();
@@ -748,6 +842,9 @@ socket.on("game:cue-placement", ({ placement }) => {
 });
 socket.on("game:reset", ({ snapshot, practiceMode }) => {
   if (snapshot) engine.importSnapshot(snapshot);
+  model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   if (practiceMode) {
     model.practiceMode = true;
     $("#shot-clock").textContent = "∞";
@@ -1024,7 +1121,8 @@ async function connectWallet() {
   }
 }
 
-function openModal({ eyebrow = "KASPA SNOOKER", title, body }) {
+function openModal({ kind = "", eyebrow = "KASPA SNOOKER", title, body }) {
+  $("#modal").dataset.kind = kind;
   $("#modal-eyebrow").textContent = eyebrow;
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
@@ -1132,6 +1230,10 @@ function leaveCurrentRoom() {
     model.liveSeat = null;
     model.livePlayers = [];
     model.practiceMode = false;
+    model.settlement = null;
+    model.winnerSeat = null;
+    model.rematchRequested = false;
+    hidePostMatchBar();
     history.replaceState({}, "", location.pathname);
     showView("lobby");
   });
@@ -1220,6 +1322,11 @@ $("#ready-match").addEventListener("click", () => socket.emit("room:ready", { ro
   if (!result?.ok) showMessage(result?.error || tr("无法准备", "Unable to ready up"), "foul");
 }));
 $("#back-lobby").addEventListener("click", leaveCurrentRoom);
+$("#post-match-exit").addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
+$("#post-match-rematch").addEventListener("click", () => {
+  if (model.practiceMode) resetPracticeFrame();
+  else requestRematch();
+});
 
 async function loadFaucet() {
   try {

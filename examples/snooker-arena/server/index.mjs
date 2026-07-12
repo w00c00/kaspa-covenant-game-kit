@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { SnookerEngine } from "../src/game-engine.js";
 import { FaucetService } from "./faucet-service.mjs";
-import { prepareRematchRoom, settlementComplete } from "./rematch.mjs";
+import { prepareRematchRoom, rematchReady, settlementComplete } from "./rematch.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
 
 const require = createRequire(import.meta.url);
@@ -68,6 +68,7 @@ function publicRoom(roomId) {
     turnDeadline: room?.turnDeadline || 0,
     players: (room?.players || []).map(({ socketId: _socketId, ...player }) => player),
     gameState: room?.engine?.snapshot() || null,
+    gameSnapshot: room?.engine?.exportSnapshot() || null,
     escrow: {
       status: escrow.status || "waiting-for-wallets",
       covenantId: escrow.draft?.covenantId || escrow.record?.deploy?.covenantId || "",
@@ -250,6 +251,7 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
     });
   }
   emitLobby();
+  startRematchIfReady(room);
   return { ok: true, role, seat, room: publicRoom(room.id) };
 }
 
@@ -268,6 +270,15 @@ function resetRoomForRematch(room) {
   room.settlementTimer = null;
   prepareRematchRoom(room);
   return publicRoom(room.id);
+}
+
+function startRematchIfReady(room) {
+  if (!rematchReady(room)) return false;
+  const nextRoom = resetRoomForRematch(room);
+  io.to(room.id).emit("game:rematch-start", { room: nextRoom });
+  io.to(room.id).emit("room:state", nextRoom);
+  emitLobby();
+  return true;
 }
 
 function scheduleRoomSettlementRetry(room) {
@@ -290,7 +301,8 @@ function scheduleRoomSettlementRetry(room) {
       room.settlement = { status: "settlement-retrying", error: error.message || String(error), winnerAddress: context.winnerAddress };
     }
     io.to(room.id).emit("game:settlement", { settlement: room.settlement, room: publicRoom(room.id) });
-    if (!settlementComplete(room.settlement)) scheduleRoomSettlementRetry(room);
+    if (settlementComplete(room.settlement)) startRematchIfReady(room);
+    else scheduleRoomSettlementRetry(room);
   }, delay);
   room.settlementTimer.unref?.();
 }
@@ -573,18 +585,14 @@ io.on("connection", (socket) => {
       return acknowledge?.({ ok: false, error: "练习模式请直接重新摆球" });
     }
     if (room.status !== "finished") return acknowledge?.({ ok: false, error: "本局尚未结束" });
-    if (!settlementComplete(room.settlement)) return acknowledge?.({ ok: false, error: "请等待本局链上结算完成" });
     room.rematchSeats ||= new Set();
     room.rematchSeats.add(player.seat);
     const seats = Array.from(room.rematchSeats).sort();
-    io.to(roomId).emit("game:rematch-status", { seats, required: room.players.length });
-    if (room.players.length === 2 && seats.length === 2) {
-      const nextRoom = resetRoomForRematch(room);
-      io.to(roomId).emit("game:rematch-start", { room: nextRoom });
-      io.to(roomId).emit("room:state", nextRoom);
-      emitLobby();
-    }
-    acknowledge?.({ ok: true, seats, required: room.players.length });
+    const required = 2;
+    const waitingForSettlement = !settlementComplete(room.settlement);
+    io.to(roomId).emit("game:rematch-status", { seats, required, waitingForSettlement });
+    const started = startRematchIfReady(room);
+    acknowledge?.({ ok: true, seats, required, waitingForSettlement, started });
   });
 
   socket.on("practice:reset", ({ roomId } = {}, acknowledge) => {

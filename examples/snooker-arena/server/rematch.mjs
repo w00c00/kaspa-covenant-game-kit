@@ -4,6 +4,14 @@ export function settlementComplete(result) {
   return result?.settlement?.status === "settled-on-chain" || result?.escrow?.status === "settled-on-chain";
 }
 
+export function rematchReady(room) {
+  if (room?.status !== "finished" || !settlementComplete(room.settlement)) return false;
+  const players = room.players || [];
+  if (players.length !== 2 || players.some((player) => player.online === false)) return false;
+  const seats = new Set(room.rematchSeats || []);
+  return players.every((player) => seats.has(player.seat));
+}
+
 export function prepareRematchRoom(room, options = {}) {
   const previousRoundId = room.roundId;
   room.roundId = options.roundId || crypto.randomUUID();

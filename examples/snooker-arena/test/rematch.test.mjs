@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareRematchRoom, settlementComplete } from "../server/rematch.mjs";
+import { prepareRematchRoom, rematchReady, settlementComplete } from "../server/rematch.mjs";
 
 test("rematch requires completed settlement and creates a clean escrow round", () => {
   assert.equal(settlementComplete({ settlement: { status: "settlement-retrying" } }), false);
@@ -30,4 +30,18 @@ test("rematch requires completed settlement and creates a clean escrow round", (
     assert.equal(player.locked, false);
     assert.equal(player.lockStatus, "unsigned");
   }
+});
+
+test("players can reserve a rematch before settlement and it starts only when both are ready", () => {
+  const room = {
+    status: "finished",
+    settlement: { settlement: { status: "settlement-retrying" } },
+    rematchSeats: new Set([0, 1]),
+    players: [{ seat: 0, online: true }, { seat: 1, online: true }]
+  };
+  assert.equal(rematchReady(room), false);
+  room.settlement = { settlement: { status: "settled-on-chain" } };
+  assert.equal(rematchReady(room), true);
+  room.players[1].online = false;
+  assert.equal(rematchReady(room), false);
 });
