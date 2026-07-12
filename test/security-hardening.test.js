@@ -178,7 +178,13 @@ test("mainnet settlement runner requires an approved network, pinned binary and 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-runner-"));
   const runner = path.join(directory, "settlement-runner");
   try {
-    fs.writeFileSync(runner, "#!/bin/sh\necho 'mainnet settle-escrow runner'\n", { mode: 0o700 });
+    fs.writeFileSync(runner, `#!/bin/sh
+case "$*" in
+  "--help") echo 'mainnet settle-escrow runner' ;;
+  "settle-escrow --help") echo 'settle-escrow --network tn10 mainnet' ;;
+  *) echo "$*" >&2; echo 'tx ${"6".repeat(64)}'; echo '(0.5 KAS released)' ;;
+esac
+`, { mode: 0o700 });
     const expectedBinSha256 = sha256Hex(fs.readFileSync(runner));
     const adapter = new KascovLabAdapter({
       bin: runner,
@@ -188,6 +194,13 @@ test("mainnet settlement runner requires an approved network, pinned binary and 
     const health = await adapter.healthCheck("mainnet");
     assert.equal(health.sha256, expectedBinSha256);
     assert.equal(health.mainnetCapable, true);
+    const settled = await adapter.settleEscrow({
+      programHex: "00",
+      releaseTo: "buyer",
+      covenantId: "11".repeat(32)
+    });
+    assert.equal(settled.txid, "6".repeat(64));
+    assert.match(settled.stderr, /--network mainnet/);
     assert.throws(() => new KascovLabAdapter({
       bin: runner,
       expectedBinSha256: "00".repeat(32),
@@ -238,7 +251,7 @@ test("mainnet preflight reports every blocker and becomes ready only with all cl
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-preflight-"));
   const runnerPath = path.join(directory, "mainnet-runner");
   try {
-    fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow runner'\n", { mode: 0o700 });
+    fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow --network runner'\n", { mode: 0o700 });
     const tools = new KascovTools();
     const silverc = fakeSilverc();
     const report = await assessMainnetReadiness({

@@ -41,7 +41,10 @@ same deployment artifact that will construct mainnet drafts.
   source, generator, hash helper and parameter schema;
 - SDK-enforced closed-test maximum of 1 KAS per player;
 - settlement runner network allowlist, executable SHA-256 pin and non-mutating
-  `--help` capability probe at service startup;
+  root/subcommand capability probes at service startup;
+- reproducible mainnet runner patch that adds only
+  `settle-escrow --network mainnet`, verifies the connected node network and
+  leaves deployment/demo commands on TN10;
 - wallet address/public-key ownership verification;
 - signed transaction commitment comparison before signature merge and broadcast;
 - exact winner-to-participant payout mapping with no fallback recipient;
@@ -54,6 +57,8 @@ same deployment artifact that will construct mainnet drafts.
 - pin the exact SDK, kaspa-wasm, SilverScript/silverc, Kascov, kascov-lab and
   program-profile hashes;
 - independently review the emitted escrow bytecode and both release paths;
+- independently review `tools/kascov-mainnet-runner/kascov-mainnet.patch` and
+  pin the Linux artifact produced by the workflow;
 - verify timeout/refund behavior and document the recovery procedure;
 - run adversarial signing tests with the supported wallet version;
 - deploy a durable database-backed store and a single settlement worker;

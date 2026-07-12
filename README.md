@@ -141,6 +141,9 @@ Mainnet settlement runners are independently guarded: the executable SHA-256
 must be pinned, `mainnet` must be in its approved-network list, and a read-only
 startup probe must confirm that the runner advertises mainnet `settle-escrow`
 support. The bundled snooker `kascov-lab` currently advertises testnet-10 only.
+The reproducible, settlement-only mainnet patch and Linux artifact workflow are
+documented in [`tools/kascov-mainnet-runner`](tools/kascov-mainnet-runner/README.md);
+its binary still requires independent review and explicit hash approval.
 
 ## Adapter Contract
 

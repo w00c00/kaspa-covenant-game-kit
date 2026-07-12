@@ -87,8 +87,19 @@ class KascovLabAdapter {
 
   async settleEscrow({ programHex, releaseTo, covenantId, timeoutMs = 120000 }) {
     const globalArgs = this.keyFile ? ["--key", this.keyFile] : [];
+    const networkArgs = this.approvedNetwork === "mainnet" ? ["--network", "mainnet"] : [];
     const run = await this.run(
-      [...globalArgs, "settle-escrow", "--program-hex", programHex, "--release-to", releaseTo, "--covenant", covenantId],
+      [
+        ...globalArgs,
+        "settle-escrow",
+        "--program-hex",
+        programHex,
+        "--release-to",
+        releaseTo,
+        "--covenant",
+        covenantId,
+        ...networkArgs
+      ],
       timeoutMs
     );
     return {
@@ -103,11 +114,15 @@ class KascovLabAdapter {
     const run = await this.run(["--help"], timeoutMs);
     const help = `${run.stdout || ""}\n${run.stderr || ""}`;
     if (!/settle-escrow/i.test(help)) throw new Error("Settlement runner does not expose settle-escrow capability");
-    if (manifest.network === "mainnet" &&
-        (!/mainnet/i.test(help) || /testnet-10\s+only/i.test(help) || /mainnet.{0,24}(?:unsupported|disabled|not supported)/i.test(help))) {
-      const error = new Error("Settlement runner help does not prove mainnet capability");
-      error.code = "SETTLEMENT_RUNNER_MAINNET_CAPABILITY_MISSING";
-      throw error;
+    if (manifest.network === "mainnet") {
+      const capability = await this.run(["settle-escrow", "--help"], timeoutMs);
+      const capabilityHelp = `${capability.stdout || ""}\n${capability.stderr || ""}`;
+      if (!/mainnet/i.test(help) || !/--network/i.test(capabilityHelp) || !/mainnet/i.test(capabilityHelp) ||
+          /testnet-10\s+only/i.test(help) || /mainnet.{0,24}(?:unsupported|disabled|not supported)/i.test(help)) {
+        const error = new Error("Settlement runner help does not prove explicit mainnet settlement capability");
+        error.code = "SETTLEMENT_RUNNER_MAINNET_CAPABILITY_MISSING";
+        throw error;
+      }
     }
     return { ...manifest, settleEscrow: true, mainnetCapable: manifest.network === "mainnet" };
   }
