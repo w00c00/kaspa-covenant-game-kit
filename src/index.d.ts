@@ -191,8 +191,8 @@ export interface SilvercManifest {
   compiler: "silverc";
   compilerVersion: string;
   compilerSha256: string;
-  compilerFileName: string;
-  compilerSize: number;
+  compilerFileName?: string;
+  compilerSize?: number;
   upstreamCommit: string;
   sourceFileName: string;
   sourceSha256: string;

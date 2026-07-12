@@ -61,8 +61,6 @@ class KascovTools {
         compiler: compiler.compiler,
         compilerVersion: compiler.compilerVersion,
         compilerSha256: compiler.compilerSha256,
-        compilerFileName: compiler.compilerFileName,
-        compilerSize: compiler.compilerSize,
         upstreamCommit: compiler.upstreamCommit,
         sourceFileName: compiler.sourceFileName,
         sourceSha256: compiler.sourceSha256,
