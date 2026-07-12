@@ -29,6 +29,10 @@ Mainnet uses the same SDK API, but it is guarded because it spends real KAS.
 const kit = new KaspaCovenantGameKit({
   networkId: "mainnet",
   allowMainnet: true,
+  // Enable only after reviewing and pinning the generated escrow program profile.
+  mainnetProgramProfileApproved: true,
+  // Closed mainnet testing defaults to at most 1 KAS per player.
+  mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
 });
@@ -39,6 +43,7 @@ Environment version:
 ```bash
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
 ## Runtime Switch
@@ -104,3 +109,11 @@ Before enabling mainnet in a user-facing app:
 - test with tiny KAS amounts first;
 - keep timeout and refund paths visible to users;
 - run independent review for contract bytecode and settlement behavior.
+
+`allowMainnet` only unlocks the network configuration. Draft construction has a
+second guard, `mainnetProgramProfileApproved`, and the SDK applies a default
+closed-test cap of 1 KAS per player. The current vendored Kascov escrow skeleton
+is identified in every intent as `kascov-silverscript-escrow-skeleton-v1` and is
+explicitly marked `contractSourceLinked: false`; the example `.sil` source must
+not be presented as the byte-for-byte source of that program until a compiler
+pipeline and independent review are added.

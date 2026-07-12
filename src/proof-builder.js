@@ -44,6 +44,8 @@ class ProofBuilder {
       productionNetwork: "mainnet",
       contractName: this.contractName,
       contractSourceHash: source ? sha256Hex(source) : "",
+      contractSourceLinked: false,
+      contractSourceRole: "documentation-only-until-compiler-pipeline-is-enabled",
       transcriptHash: hash,
       players,
       winner: winnerAddress,

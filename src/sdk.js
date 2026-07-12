@@ -76,8 +76,30 @@ class KaspaCovenantGameKit {
     return this.escrow.createIntent(this.toMatch(input));
   }
 
-  buildDeployDraft(input = {}) {
-    return this.escrow.buildPlayerFundedDeployDraft(this.toMatch(input));
+  async buildDeployDraft(input = {}) {
+    const match = this.toMatch(input);
+    const draft = await this.escrow.buildPlayerFundedDeployDraft(match);
+    this.store.upsertEscrow({
+      id: draft.intent.id,
+      matchId: match.id,
+      roomId: match.roomId || match.id,
+      roundId: match.roundId,
+      game: match.game,
+      network: this.network.kaspaNetworkId,
+      status: "unsigned-player-funded-draft",
+      covenantId: draft.covenantId,
+      programHex: draft.programHex,
+      programHash: draft.programHash,
+      stakeKas: draft.intent.stakeKas,
+      totalLockedKas: draft.intent.totalLockedKas,
+      buyer: draft.intent.buyer,
+      seller: draft.intent.seller,
+      arbiter: draft.intent.arbiter,
+      unsignedTransactionSafeJson: draft.unsignedTransactionSafeJson,
+      signers: draft.signers,
+      playerSignatures: []
+    });
+    return draft;
   }
 
   mergePlayerSignatures({ draft, signatures }) {
@@ -85,7 +107,8 @@ class KaspaCovenantGameKit {
     return this.escrow.mergePlayerSignedTransactions(
       draft.unsignedTransactionSafeJson,
       signatures || [],
-      draft.signers?.length || 2
+      draft.signers?.length || 2,
+      draft.signers || []
     );
   }
 
@@ -93,6 +116,10 @@ class KaspaCovenantGameKit {
     const normalizedMatch = normalizeMatch(match);
     if (!draft?.unsignedTransactionSafeJson) throw new Error("draft.unsignedTransactionSafeJson is required");
     if (!address) throw new Error("address is required");
+    const expectedSigner = draft.signers?.find((item) => Number(item.inputIndex) === Number(signerInputIndex));
+    if (!expectedSigner || expectedSigner.address !== address) {
+      throw new Error("Submitted wallet address does not match signer input in the approved draft");
+    }
     const escrowId = this.escrow.escrowId(normalizedMatch);
     const existing = this.store.findEscrow((item) => item.id === escrowId) || {
       id: escrowId,
@@ -118,8 +145,11 @@ class KaspaCovenantGameKit {
     const merge = this.escrow.mergePlayerSignedTransactions(
       draft.unsignedTransactionSafeJson,
       playerSignatures,
-      draft.signers?.length || 2
+      draft.signers?.length || 2,
+      draft.signers || []
     );
+    const rejected = merge.rejectedSignatures?.find((item) => Number(item.signerInputIndex) === Number(signerInputIndex));
+    if (rejected) throw new Error(rejected.reason);
     const escrow = this.store.upsertEscrow({
       ...existing,
       status: merge.complete ? "fully-signed-ready-to-broadcast" : "collecting-player-signatures",

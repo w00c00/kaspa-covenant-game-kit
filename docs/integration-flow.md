@@ -9,6 +9,8 @@ const myGame = require("./my-game-adapter");
 const kit = new KaspaCovenantGameKit({
   networkId: process.env.KASPA_COVENANT_NETWORK || "tn10",
   allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
+  mainnetProgramProfileApproved: process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED === "true",
+  mainnetMaxStakeKas: process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1",
   adapter: myGame,
   arbiter: {
     address: process.env.ARBITER_ADDRESS,
@@ -21,6 +23,12 @@ const kit = new KaspaCovenantGameKit({
 Use `KASPA_COVENANT_NETWORK=tn10` for testnet. Use
 `KASPA_COVENANT_NETWORK=mainnet` plus
 `KASPA_COVENANT_ALLOW_MAINNET=true` for mainnet.
+
+Mainnet draft construction also requires
+`KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true` to be passed into
+`mainnetProgramProfileApproved`. Keep the default 1 KAS per-player cap for
+closed testing. This second switch must only be enabled for a reviewed and
+pinned program profile.
 
 ## 2. Build A Match
 

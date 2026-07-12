@@ -8,6 +8,7 @@ class SettlementEngine {
     this.store = options.store || this.escrowEngine?.store || null;
     this.proofBuilder = options.proofBuilder;
     this.kascovLab = options.kascovLab;
+    this.inFlight = new Map();
     if (!this.escrowEngine) throw new Error("SettlementEngine requires escrowEngine");
     if (!this.proofBuilder) throw new Error("SettlementEngine requires proofBuilder");
   }
@@ -21,11 +22,13 @@ class SettlementEngine {
     const players = match.players || [];
     const hasChainEscrow = this.escrowEngine.isEscrowDeployed(escrowRecord);
     const stakeKas = Number(match.stakeKas || 0);
+    const covenantProof = this.proofBuilder.covenantPlan(match, winnerAddress, gameState);
     const settlement = {
       id: randomId(`GAME-${match.id || "MATCH"}`),
       matchId: match.id,
       roomId: match.roomId || match.id,
       game: match.game,
+      roundId: match.roundId || "",
       winnerAddress,
       winner: winnerAddress,
       stakeKas,
@@ -33,7 +36,8 @@ class SettlementEngine {
       status: hasChainEscrow ? "pending-chain-covenant-settlement" : "settlement-needs-chain-escrow",
       reason,
       settledAt: nowIso(),
-      covenantProof: this.proofBuilder.covenantPlan(match, winnerAddress, gameState),
+      covenantProof,
+      transcriptHash: covenantProof.transcriptHash,
       chainEscrowId: escrowRecord?.id || "",
       chainCovenantId: escrowRecord?.deploy?.covenantId || "",
       releaseTo: hasChainEscrow ? this.escrowEngine.releaseSideForWinner(escrowRecord, winnerAddress) : ""
@@ -41,10 +45,26 @@ class SettlementEngine {
     return this.store?.upsertSettlement(settlement) || settlement;
   }
 
-  async settleWinner({ match, winnerAddress, reason = "win", gameState = {}, settlementId = "" }) {
+  settleWinner(input) {
+    const key = this.escrowEngine.escrowId(input.match);
+    const running = this.inFlight.get(key);
+    if (running) return running;
+    const operation = this._settleWinner(input).finally(() => {
+      if (this.inFlight.get(key) === operation) this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, operation);
+    return operation;
+  }
+
+  async _settleWinner({ match, winnerAddress, reason = "win", gameState = {}, settlementId = "" }) {
     const escrowRecord = this.findEscrowForMatch(match);
     const pending =
       (settlementId && this.store?.findSettlement((item) => item.id === settlementId)) ||
+      this.store?.findSettlement((item) =>
+        item.chainEscrowId === escrowRecord?.id &&
+        item.matchId === match.id &&
+        (item.roundId || "") === (match.roundId || "")
+      ) ||
       this.createPendingSettlement({ match, winnerAddress, reason, gameState, escrowRecord });
 
     if (!this.escrowEngine.isEscrowDeployed(escrowRecord)) {
@@ -55,10 +75,18 @@ class SettlementEngine {
       };
     }
     if (this.escrowEngine.isEscrowSettled(escrowRecord)) {
+      const reconciled = this.store?.upsertSettlement({
+        ...pending,
+        status: "settled-on-chain",
+        chainSettlementTxid: pending.chainSettlementTxid || escrowRecord.settle?.txid || escrowRecord.settleTxid || "",
+        chainCovenantId: pending.chainCovenantId || escrowRecord.deploy?.covenantId || "",
+        releaseTo: pending.releaseTo || escrowRecord.releaseTo || "",
+        releasedKas: pending.releasedKas || escrowRecord.settle?.releasedKas || 0
+      }) || pending;
       return {
-        settlement: pending,
+        settlement: reconciled,
         escrow: escrowRecord,
-        visible: this.proofBuilder.visibleSettlement(pending, escrowRecord)
+        visible: this.proofBuilder.visibleSettlement(reconciled, escrowRecord)
       };
     }
     if (!this.kascovLab) {

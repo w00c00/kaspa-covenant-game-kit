@@ -6,6 +6,11 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 
 > Experimental: TN10 is the default. Mainnet uses the same SDK path, but requires an explicit switch because it spends real KAS.
 
+> Mainnet safety: `allowMainnet` only enables the network preset. Building a
+> mainnet funding draft additionally requires `mainnetProgramProfileApproved`
+> and is capped at 1 KAS per player by default. This is for closed testing, not
+> a claim that the covenant program has completed an independent audit.
+
 ## What This SDK Does
 
 - Creates a two-player, player-funded covenant escrow intent on TN10 or mainnet.
@@ -76,6 +81,8 @@ Mainnet, same API, explicit confirmation:
 ```bash
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
+KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
 Direct constructor usage:
@@ -86,6 +93,8 @@ const tn10Kit = new KaspaCovenantGameKit({ networkId: "tn10", adapter: myGame, a
 const mainnetKit = new KaspaCovenantGameKit({
   networkId: "mainnet",
   allowMainnet: true,
+  mainnetProgramProfileApproved: true,
+  mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
 });
@@ -96,6 +105,8 @@ and proof APIs stay the same. The preset changes address prefixes, network id,
 REST / wRPC targets, explorer links, and display symbol.
 
 More detail: [docs/network-switch.md](docs/network-switch.md)
+
+Mainnet security gates: [docs/mainnet-readiness.md](docs/mainnet-readiness.md)
 
 ## Adapter Contract
 

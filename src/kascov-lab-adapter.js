@@ -11,7 +11,7 @@ function parseKascovLabDeploy(stdout) {
 
 function parseKascovLabSettle(stdout) {
   const txid = stdout.match(/\btx\s+([0-9a-f]{64})/i)?.[1] || "";
-  const releasedKas = Number(stdout.match(/\(([0-9.]+)\s+TKAS released\)/i)?.[1] || 0);
+  const releasedKas = Number(stdout.match(/\(([0-9.]+)\s+T?KAS released\)/i)?.[1] || 0);
   return { txid, releasedKas };
 }
 

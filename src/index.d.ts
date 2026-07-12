@@ -21,13 +21,15 @@ export interface Player {
   publicKey?: string;
 }
 
+export type KasAmount = string | number;
+
 export interface Match {
   id: string;
   matchId?: string;
   roomId?: string;
   roundId?: string;
   game: string;
-  stakeKas: number;
+  stakeKas: KasAmount;
   players: Player[];
   claimPaths?: string[];
   [key: string]: unknown;
@@ -52,8 +54,16 @@ export interface EscrowIntent {
   status: string;
   stakeKas: number;
   totalLockedKas: number;
+  stakeSompi: string;
+  totalLockedSompi: string;
   programHex: string;
   programHash: string;
+  programProfile?: {
+    id: string;
+    generator: string;
+    contractSourceLinked: boolean;
+    mainnetApproved: boolean;
+  };
   buyer?: Player;
   seller?: Player;
 }
@@ -90,6 +100,7 @@ export declare const ENV_ALLOW_MAINNET_KEY: "KASPA_COVENANT_ALLOW_MAINNET";
 export declare function normalizeNetworkId(value?: string): "tn10" | "mainnet" | string;
 export declare function networkIdFrom(options?: { network?: NetworkConfig; networkId?: string }): string;
 export declare function mainnetAllowed(options?: { allowMainnet?: boolean }): boolean;
+export declare function isMainnetNetwork(network?: NetworkConfig): boolean;
 export declare function kascovCliNetwork(network?: NetworkConfig): string;
 export declare function kascovTraceCommand(covenantId?: string, network?: NetworkConfig): string;
 export declare function resolveNetworkConfig(options?: {
@@ -125,9 +136,9 @@ export declare class CovenantEscrowEngine {
   escrowId(match: Match): string;
   createIntent(match: Match): EscrowIntent;
   buildPlayerFundedDeployDraft(match: Match): Promise<DeployDraft>;
-  mergePlayerSignedTransactions(unsignedTransactionSafeJson: string, playerSignatures: unknown[], requiredSignatures: number): unknown;
+  mergePlayerSignedTransactions(unsignedTransactionSafeJson: string, playerSignatures: unknown[], requiredSignatures: number, expectedSigners?: DeployDraft["signers"]): unknown;
   broadcastSignedCovenant(match: Match, safeTransactionJson: string | object, existingRecord?: object): Promise<unknown>;
-  releaseSideForWinner(record: unknown, winnerAddress: string, fallback?: "buyer" | "seller"): "buyer" | "seller";
+  releaseSideForWinner(record: unknown, winnerAddress: string): "buyer" | "seller";
 }
 
 export declare class ProofBuilder {
@@ -142,7 +153,7 @@ export declare class SettlementEngine {
 }
 
 export declare class KascovLabAdapter {
-  constructor(options?: { bin?: string; env?: Record<string, string> });
+  constructor(options?: { bin?: string; env?: Record<string, string>; keyFile?: string });
   settleEscrow(input: { programHex: string; releaseTo: "buyer" | "seller"; covenantId: string; timeoutMs?: number }): Promise<unknown>;
 }
 
@@ -165,6 +176,9 @@ export declare class KaspaCovenantGameKit {
     contractSource?: string;
     kascovLab?: KascovLabAdapter | null;
     kascovLabBin?: string;
+    mainnetProgramProfileApproved?: boolean;
+    mainnetMaxStakeKas?: KasAmount;
+    maxStakeSompi?: string | number | bigint;
     [key: string]: unknown;
   });
   registerAdapter(name: string, adapter: GameAdapter): GameAdapter;
@@ -192,7 +206,12 @@ export declare class KaspaCovenantGameKit {
 }
 
 export declare function normalizeMatch(match: Match): Match;
+export declare const TRANSCRIPT_PROTOCOL: "kaspa-covenant-game-kit/transcript";
+export declare const TRANSCRIPT_VERSION: 1;
+export declare function canonicalValue<T = unknown>(value: T): T;
+export declare function canonicalTranscript(match: Match, gameState?: unknown): unknown;
 export declare function transcriptHash(match: Match, gameState?: unknown): string;
+export declare function kasToSompi(amountKas: KasAmount): bigint;
 
 export declare const adapters: {
   gomoku: GameAdapter;

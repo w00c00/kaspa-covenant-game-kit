@@ -12,10 +12,11 @@
     "src",
     "contracts",
     "docs",
-    "examples",
+    "examples/*.js",
     "vendor",
     ".env.example",
     "README.md",
+    "SECURITY.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
@@ -25,8 +26,11 @@
     "url": "https://github.com/w00c00/kaspa-covenant-game-kit.git"
   },
   "scripts": {
-    "check": "find src examples test -name '*.js' -print0 | xargs -0 -n1 node --check",
-    "test": "node --test"
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test",
+    "test:sdk": "node --test test/*.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.js",
+    "prepack": "npm run check && npm run test:sdk"
   },
   "keywords": [
     "kaspa",

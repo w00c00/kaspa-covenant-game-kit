@@ -23,7 +23,7 @@ sessionStorage.setItem("kaspa-snooker-player-id", playerId);
 const demoKeys = ["44".repeat(32), "55".repeat(32)];
 const model = {
   stakeKas: 25,
-  config: { network: { id: "tn10", label: "Kaspa Testnet 10", symbol: "TKAS", isTestnet: true }, chainMode: "preview" },
+  config: { network: { id: "tn10", label: "Kaspa Testnet 10", symbol: "TKAS", addressPrefix: "kaspatest", isTestnet: true }, chainMode: "preview" },
   wallet: null,
   opponent: { name: "W0C00", address: "kaspatest:qz8m...7n3r", publicKey: demoKeys[1] },
   chain: { intent: null, proof: null },
@@ -41,6 +41,8 @@ const model = {
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
+const currencySymbol = () => model.config?.network?.symbol || "TKAS";
+const networkShortName = () => String(model.config?.network?.id || "tn10").toUpperCase();
 // Register every listener before opening the connection. With autoConnect on,
 // a fast cached page could receive both `connect` and the initial lobby list
 // before the handlers near the middle of this module had been installed.
@@ -201,7 +203,7 @@ function applyLanguage() {
   $(".lobby-hero h1").innerHTML = tr("链上斯诺克<br/><span>每一杆，都算数。</span>", "ON-CHAIN SNOOKER<br/><span>EVERY SHOT COUNTS.</span>");
   setNodeText(".lobby-hero > p", "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。", "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner.");
   setNodeText("#create-room", "创建对战房间", "Create match");
-  for (const option of $("#create-stake").options) option.textContent = `${option.value} TKAS / ${tr("人", "player")}`;
+  for (const option of $("#create-stake").options) option.textContent = `${option.value} ${currencySymbol()} / ${tr("人", "player")}`;
   $("#join-code").placeholder = tr("输入房间号 KSP-XXXXX", "Enter room code KSP-XXXXX");
   setNodeText("#join-room", "加入", "Join");
   setNodeText(".rooms-panel h2", "公开房间", "Public rooms");
@@ -449,7 +451,7 @@ function renderLobbyRooms(rooms = []) {
     list.innerHTML = `<div class="room-list-empty">${tr("目前没有等待中的房间，创建第一个吧。", "No rooms are waiting. Create the first one.")}</div>`;
     return;
   }
-  list.innerHTML = rooms.map((room) => `<button class="lobby-room" data-room="${room.roomId}"><span><b>${room.roomId}</b><small>${room.players.length}/2 ${tr("玩家", "players")}</small></span><span><strong>${room.stakeKas * 2}</strong><small>TKAS ${tr("奖池", "prize")}</small></span><em>${tr("加入", "Join")} →</em></button>`).join("");
+  list.innerHTML = rooms.map((room) => `<button class="lobby-room" data-room="${room.roomId}"><span><b>${room.roomId}</b><small>${room.players.length}/2 ${tr("玩家", "players")}</small></span><span><strong>${room.stakeKas * 2}</strong><small>${currencySymbol()} ${tr("奖池", "prize")}</small></span><em>${tr("加入", "Join")} →</em></button>`).join("");
   list.querySelectorAll("[data-room]").forEach((button) => button.addEventListener("click", () => joinRoom(button.dataset.room)));
 }
 
@@ -457,7 +459,7 @@ function updateWaitingRoom(room) {
   model.currentRoom = room;
   model.livePlayers = room.players || [];
   $("#waiting-room-title").textContent = `${tr("房间", "Room")} ${room.roomId}`;
-  $("#waiting-pot").textContent = `${Number(room.stakeKas || 0) * 2} TKAS`;
+  $("#waiting-pot").textContent = `${Number(room.stakeKas || 0) * 2} ${currencySymbol()}`;
   for (const seat of [0, 1]) {
     const node = $(`#waiting-seat-${seat}`);
     const player = room.players.find((item) => item.seat === seat);
@@ -491,7 +493,7 @@ function updateWaitingRoom(room) {
       ? (room.escrow?.status === "confirming-lock-on-chain" ? tr("交易已广播 · 等待确认", "Broadcast · Waiting for confirmation") : tr("已签名 · 等待对手", "Signed · Waiting for opponent"))
       : local?.lockStatus === "submitting"
         ? tr("正在广播锁仓交易…", "Broadcasting escrow transaction…")
-        : `${tr("签名并锁定", "Sign and lock")} ${room.stakeKas} TKAS`;
+        : `${tr("签名并锁定", "Sign and lock")} ${room.stakeKas} ${currencySymbol()}`;
   $("#ready-match").disabled = !local?.locked || local?.ready;
   $("#ready-match").textContent = local?.ready ? tr("已准备 · 等待对手", "Ready · Waiting for opponent") : tr("准备比赛", "Ready to play");
   if (room.players.length < 2) $("#room-notice").textContent = tr("分享房间链接，等待第二位玩家加入。", "Share the room link and wait for a second player.");
@@ -508,10 +510,10 @@ function enterRoom(result) {
   model.livePlayers = room.players || [];
   model.practiceMode = Boolean(room.practiceMode);
   model.stakeKas = Number(room.stakeKas || 0);
-  $("#chain-mode").textContent = model.config.chainMode === "live" ? "TN10 LIVE" : "SETTLEMENT OFFLINE";
+  $("#chain-mode").textContent = model.config.chainMode === "live" ? `${model.config.network.id.toUpperCase()} LIVE` : "SETTLEMENT OFFLINE";
   $("#pot-value").textContent = String(model.stakeKas * 2);
   $(".pot-label").textContent = tr("本局奖池", "Prize pool");
-  $(".pot-meta span:first-child").textContent = `${tr("每人", "Each")} ${model.stakeKas} TKAS`;
+  $(".pot-meta span:first-child").textContent = `${tr("每人", "Each")} ${model.stakeKas} ${currencySymbol()}`;
   $("#step-wallet .step-state").textContent = model.wallet ? tr("已绑定", "Bound") : tr("待连接", "Connect");
   $("#step-lock .step-state").textContent = tr("待锁定", "Pending");
   $("#step-settle .step-state").textContent = tr("赛后", "Post-game");
@@ -751,11 +753,11 @@ function renderSettlementModal() {
       <div class="settlement-progress">
         <div class="settlement-progress-item done"><i>1</i><span><b>${tr("规则确认胜负", "Result verified")}</b><small>${tr("服务端权威对局记录已锁定", "Authoritative transcript locked")}</small></span></div>
         <div class="settlement-progress-item ${stepClass(Boolean(details.txid), !details.txid && !details.failed)}"><i>2</i><span><b>${tr("广播释放交易", "Broadcast release transaction")}</b><small>${details.txid ? `${tr("交易", "TX")} ${short(details.txid)}` : settlementStatusLabel(details.status)}</small></span></div>
-        <div class="settlement-progress-item ${stepClass(details.done, Boolean(details.txid) && !details.done)}"><i>3</i><span><b>${tr("TN10 链上确认", "TN10 confirmation")}</b><small>${details.done ? tr("奖池已释放至胜者钱包", "Prize released to winner wallet") : tr("自动刷新，无需手动操作", "Auto-refreshing; no action required")}</small></span></div>
+        <div class="settlement-progress-item ${stepClass(details.done, Boolean(details.txid) && !details.done)}"><i>3</i><span><b>${tr(`${networkShortName()} 链上确认`, `${networkShortName()} confirmation`)}</b><small>${details.done ? tr("奖池已释放至胜者钱包", "Prize released to winner wallet") : tr("自动刷新，无需手动操作", "Auto-refreshing; no action required")}</small></span></div>
       </div>
       <div class="data-grid settlement-data">
         <div class="data-cell"><div class="data-label">${tr("结算状态", "STATUS")}</div><div class="data-value ${details.done ? "good" : ""}" id="live-settlement-status">${settlementStatusLabel(details.status)}</div></div>
-        <div class="data-cell"><div class="data-label">${tr("释放金额", "RELEASED")}</div><div class="data-value good">${details.releasedKas || model.stakeKas * 2} TKAS</div></div>
+        <div class="data-cell"><div class="data-label">${tr("释放金额", "RELEASED")}</div><div class="data-value good">${details.releasedKas || model.stakeKas * 2} ${currencySymbol()}</div></div>
         ${details.covenantId ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Covenant ID</div><div class="data-value">${details.covenantId}</div></div>` : ""}
         ${details.txid ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Settlement TXID</div><div class="data-value">${details.txid}</div></div>` : ""}
       </div>
@@ -1035,8 +1037,16 @@ async function loadConfig() {
     model.config = await api("/api/config");
     const network = model.config.network;
     $("#network-name").textContent = `${network.id.toUpperCase()} · ${network.isTestnet ? "TESTNET" : "MAINNET"}`;
+    $(".lobby-kicker").innerHTML = `<i class="network-dot"></i> KASPA ${network.id.toUpperCase()} · AUTOMATIC SETTLEMENT`;
     $("#pot-symbol").textContent = network.symbol;
-    $("#chain-mode").textContent = model.config.chainMode === "live" ? "TN10 LIVE" : "SETTLEMENT OFFLINE";
+    $("#chain-mode").textContent = model.config.chainMode === "live" ? `${network.id.toUpperCase()} LIVE` : "SETTLEMENT OFFLINE";
+    const options = (model.config.stakeOptions || []).filter((value, index, values) => Number(value) > 0 && values.indexOf(value) === index);
+    if (options.length) {
+      $("#create-stake").innerHTML = options.map((value, index) => `<option value="${value}" ${index === Math.min(2, options.length - 1) ? "selected" : ""}>${value} ${network.symbol} / ${tr("人", "player")}</option>`).join("");
+      model.stakeKas = Number($("#create-stake").value);
+    }
+    $(".faucet-panel").hidden = !model.config.faucetAvailable;
+    if (model.config.faucetAvailable) await loadFaucet();
   } catch {
     showMessage(tr("结算服务暂未连接，游戏仍可离线试玩", "Settlement service is offline; local practice remains available"), "foul");
   }
@@ -1098,11 +1108,14 @@ async function connectWallet() {
     if (wallet?.requestAccounts) {
       const accounts = await wallet.requestAccounts();
       const address = accounts?.[0];
+      if (!address || !address.toLowerCase().startsWith(`${model.config.network.addressPrefix}:`)) {
+        throw new Error(tr(`钱包网络不匹配，请切换到 ${networkShortName()}`, `Wallet network mismatch. Switch to ${networkShortName()}.`));
+      }
       let publicKey = "";
       try { publicKey = await wallet.getPublicKey(); } catch { /* surfaced in escrow readiness */ }
       model.wallet = { address, publicKey, provider: "Kasware" };
     } else {
-      throw new Error(tr("未检测到 KasWare 钱包，请安装扩展并切换到 Kaspa TN10", "KasWare was not detected. Install the extension and switch to Kaspa TN10."));
+      throw new Error(tr(`未检测到 KasWare 钱包，请安装扩展并切换到 Kaspa ${networkShortName()}`, `KasWare was not detected. Install the extension and switch to Kaspa ${networkShortName()}.`));
     }
     button.classList.add("connected");
     button.textContent = short(model.wallet.address, 6, 4);
@@ -1143,7 +1156,7 @@ function showWalletModal() {
 }
 
 async function showEscrow() {
-  openModal({ title: tr("正在生成托管方案…", "Generating escrow plan…"), body: `<div class="modal-note">${tr("SDK 正在把房间、双方公钥和押注金额转换为 TN10 Covenant intent。", "The SDK is converting the room, both public keys and stakes into a TN10 Covenant intent.")}</div>` });
+  openModal({ title: tr("正在生成托管方案…", "Generating escrow plan…"), body: `<div class="modal-note">${tr(`SDK 正在把房间、双方公钥和押注金额转换为 ${networkShortName()} Covenant intent。`, `The SDK is converting the room, both public keys and stakes into a ${networkShortName()} Covenant intent.`)}</div>` });
   try {
     const payload = await api("/api/escrow/intent", { method: "POST", body: JSON.stringify(gamePayload()) });
     model.chain.intent = payload.intent;
@@ -1183,7 +1196,7 @@ async function showEscrow() {
 async function buildDraft() {
   const action = $("#draft-action");
   action.disabled = true;
-  action.textContent = tr("查询 TN10 UTXO…", "Querying TN10 UTXOs…");
+  action.textContent = tr(`查询 ${networkShortName()} UTXO…`, `Querying ${networkShortName()} UTXOs…`);
   try {
     const payload = await api("/api/escrow/draft", { method: "POST", body: JSON.stringify(gamePayload()) });
     const draft = payload.draft;
@@ -1200,7 +1213,7 @@ function showSettings() {
       <div class="settings-row"><div><div class="settings-name">${tr("练习模式", "Practice mode")}</div><div class="settings-help">${tr("无钱包、无押注、无链上结算", "No wallet, stake or settlement")}</div></div><strong>FREE PLAY</strong></div>
       <div class="settings-row"><div><div class="settings-name">${tr("重新摆球", "Rack again")}</div><div class="settings-help">${tr("清空当前比分并重新开始练习", "Clear scores and restart practice")}</div></div><button class="outline-button" id="practice-reset" style="width:auto;margin:0;padding:0 12px">${tr("重新摆球", "Rack again")}</button></div>
       <div class="settings-row"><div><div class="settings-name">${tr("退出练习", "Exit practice")}</div><div class="settings-help">${tr("关闭练习房间并返回游戏大厅", "Close the practice room and return to the lobby")}</div></div><button class="outline-button" id="practice-leave" style="width:auto;margin:0;padding:0 12px">${tr("返回大厅", "Return to lobby")}</button></div>` : `
-      <div class="settings-row"><div><div class="settings-name">${tr("本局押注", "Frame stake")}</div><div class="settings-help">${tr("创建房间后不可修改，避免与链上锁仓金额不一致", "Cannot be changed after room creation")}</div></div><strong>${model.currentRoom?.stakeKas || model.stakeKas} TKAS / ${tr("人", "player")}</strong></div>`;
+      <div class="settings-row"><div><div class="settings-name">${tr("本局押注", "Frame stake")}</div><div class="settings-help">${tr("创建房间后不可修改，避免与链上锁仓金额不一致", "Cannot be changed after room creation")}</div></div><strong>${model.currentRoom?.stakeKas || model.stakeKas} ${currencySymbol()} / ${tr("人", "player")}</strong></div>`;
   openModal({
     eyebrow: "GAME SETTINGS · 游戏设置",
     title: tr("对局设置", "Game settings"),
@@ -1286,7 +1299,7 @@ $("#lock-stake").addEventListener("click", async () => {
       return;
     }
     if (prepared.status === "confirming-lock-on-chain") {
-      showMessage(tr("锁仓交易已广播，正在等待 TN10 确认", "Escrow broadcast; waiting for TN10 confirmation"), "score");
+      showMessage(tr(`锁仓交易已广播，正在等待 ${networkShortName()} 确认`, `Escrow broadcast; waiting for ${networkShortName()} confirmation`), "score");
       return;
     }
     if (prepared.status !== "signature-required" || !prepared.signing) throw new Error(tr("服务没有返回钱包签名草案", "Server did not return a wallet signing draft"));
@@ -1304,7 +1317,7 @@ $("#lock-stake").addEventListener("click", async () => {
     button.textContent = tr("正在合并签名并广播…", "Merging signatures and broadcasting…");
     const submitted = await socketRequest("room:lock:submit", { roomId, signedTransactionSafeJson });
     if (!submitted.ok) throw new Error(submitted.error || tr("签名提交失败", "Signature submission failed"));
-    if (submitted.status === "locked-on-chain") showMessage(tr("双方押金已在 TN10 上锁定", "Both stakes are locked on TN10"), "score");
+    if (submitted.status === "locked-on-chain") showMessage(tr(`双方押金已在 ${networkShortName()} 上锁定`, `Both stakes are locked on ${networkShortName()}`), "score");
     else if (submitted.status === "confirming-lock-on-chain") showMessage(tr("锁仓交易已广播，等待链上确认", "Escrow broadcast; waiting for confirmation"), "score");
     else showMessage(tr("签名已提交，等待对手签名后自动广播", "Signature submitted; broadcast starts after opponent signs"), "score");
   } catch (error) {
@@ -1314,7 +1327,7 @@ $("#lock-stake").addEventListener("click", async () => {
     const local = model.currentRoom?.players?.find((item) => item.seat === model.liveSeat);
     if (!local?.locked && local?.lockStatus !== "signed") {
       button.disabled = false;
-      button.textContent = `${tr("签名并锁定", "Sign and lock")} ${model.currentRoom?.stakeKas || model.stakeKas} TKAS`;
+      button.textContent = `${tr("签名并锁定", "Sign and lock")} ${model.currentRoom?.stakeKas || model.stakeKas} ${currencySymbol()}`;
     }
   }
 });
@@ -1359,7 +1372,6 @@ $("#claim-faucet").addEventListener("click", async () => {
 });
 
 showView("lobby");
-loadFaucet();
 $("#escrow-action").addEventListener("click", showEscrow);
 $("#settings").addEventListener("click", showSettings);
 $("#copy-room").addEventListener("click", async () => {

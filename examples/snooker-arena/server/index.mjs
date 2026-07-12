@@ -24,6 +24,10 @@ const dataDir = path.join(root, "data");
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || "0.0.0.0";
 const networkId = process.env.KASPA_COVENANT_NETWORK || "tn10";
+const mainnetRequested = ["mainnet", "kaspa", "kaspa-mainnet"].includes(networkId.toLowerCase());
+const mainnetProgramProfileApproved = process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED === "true";
+const mainnetSettlementRunnerApproved = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED === "true";
+const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
 const faucet = new FaucetService({
   dataDir,
   networkId: "testnet-10",
@@ -31,11 +35,14 @@ const faucet = new FaucetService({
 });
 const verifier = ensureSettlementVerifier(dataDir);
 const bundledKascovLab = path.join(root, "bin", "kascov-lab");
-const kascovLabBin = process.env.KASCOV_LAB_BIN || (fs.existsSync(bundledKascovLab) ? bundledKascovLab : "");
+const configuredKascovLabBin = process.env.KASCOV_LAB_BIN || (fs.existsSync(bundledKascovLab) ? bundledKascovLab : "");
+const kascovLabBin = mainnetRequested && !mainnetSettlementRunnerApproved ? "" : configuredKascovLabBin;
 
 const kit = new KaspaCovenantGameKit({
   networkId,
   allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
+  mainnetProgramProfileApproved,
+  mainnetMaxStakeKas,
   adapter: snookerAdapter,
   store: new JsonStore(path.join(dataDir, "ledger.json")),
   arbiter: {
@@ -399,9 +406,11 @@ io.on("connection", (socket) => {
 
   socket.on("room:create", ({ playerId, name, address, publicKey, stakeKas = 25 } = {}, acknowledge) => {
     const id = createRoomId();
+    const defaultStake = kit.network.id === "mainnet" ? 0.1 : 25;
+    const maximumStake = kit.network.id === "mainnet" ? Number(mainnetMaxStakeKas) : 10_000;
     const room = {
       id,
-      stakeKas: Math.max(0, Math.min(10_000, Number(stakeKas) || 25)),
+      stakeKas: Math.max(0.00000001, Math.min(maximumStake, Number(stakeKas) || defaultStake)),
       status: "waiting",
       players: [],
       roundId: crypto.randomUUID(),
@@ -645,21 +654,32 @@ function matchFrom(body = {}) {
 app.get("/api/health", (_req, res) => res.json({ ok: true, network: kit.network }));
 
 app.get("/api/config", (_req, res) => {
+  const isMainnet = kit.network.id === "mainnet";
   res.json({
     network: {
       id: kit.network.id,
       label: kit.network.label,
       symbol: kit.network.currencySymbol,
       isTestnet: kit.network.isTestnet,
+      addressPrefix: kit.network.addressPrefix,
       explorer: kit.network.kascovExplorerBase
     },
     chainMode: kit.kascovLab ? "live" : "unavailable",
-    escrowReady: Boolean(kit.kascovLab),
-    mainnetGuarded: true
+    escrowReady: Boolean(kit.kascovLab) && (!isMainnet || (mainnetProgramProfileApproved && mainnetSettlementRunnerApproved)),
+    faucetAvailable: kit.network.isTestnet,
+    stakeOptions: isMainnet ? [0.01, 0.05, 0.1, Math.min(1, Number(mainnetMaxStakeKas))] : [5, 25, 50, 100],
+    mainnetGuarded: true,
+    mainnetReadiness: {
+      mode: isMainnet ? "closed-test" : "tn10",
+      programProfileApproved: !isMainnet || mainnetProgramProfileApproved,
+      settlementRunnerApproved: !isMainnet || mainnetSettlementRunnerApproved,
+      maxStakeKas: isMainnet ? Number(mainnetMaxStakeKas) : null
+    }
   });
 });
 
 app.get("/api/faucet", async (_req, res) => {
+  if (!kit.network.isTestnet) return res.status(404).json({ error: "Faucet is available on TN10 only" });
   let balanceKas = null;
   try { balanceKas = await faucet.balanceKas(); } catch {}
   res.json({ ...faucet.publicInfo(), balanceKas });
@@ -667,6 +687,7 @@ app.get("/api/faucet", async (_req, res) => {
 
 app.post("/api/faucet/claim", async (req, res, next) => {
   try {
+    if (!kit.network.isTestnet) return res.status(404).json({ error: "Faucet is available on TN10 only" });
     const claim = await faucet.claim(String(req.body?.address || "").trim(), Number(req.body?.amountKas || 200));
     res.json({ ok: true, claim });
   } catch (error) {

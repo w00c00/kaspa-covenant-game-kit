@@ -82,9 +82,12 @@ SDK 的地址、REST/wRPC、Explorer、match 和签名接口已经按网络配�
 ```dotenv
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
+KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
+KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
-注意：当前上游 `kascov-lab` 释放器明确只支持 TN10。切换主网前还必须替换为经过审计的主网 settlement runner，并重新审计 Covenant；仅修改两个环境变量不会绕过这项保护。
+注意：当前随示例部署的 `kascov-lab` 释放器只按 TN10 验证。主网模式还需要经过审查的 settlement runner，并分别打开 program profile 与 runner 两道许可；默认每位玩家最多 1 KAS。仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。
 
 ## 主要目录
 

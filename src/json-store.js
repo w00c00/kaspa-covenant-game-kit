@@ -21,9 +21,12 @@ class JsonStore {
       this.state.escrows = parsed.escrows || parsed.covenantEscrows || [];
       this.state.settlements = parsed.settlements || parsed.gameSettlements || [];
       this.state.updatedAt = parsed.updatedAt || "";
-    } catch {
-      this.state.escrows = [];
-      this.state.settlements = [];
+    } catch (error) {
+      if (error.code === "ENOENT") return this.state;
+      const wrapped = new Error(`Unable to load covenant store ${this.file}: ${error.message || error}`);
+      wrapped.code = "STORE_LOAD_FAILED";
+      wrapped.cause = error;
+      throw wrapped;
     }
     return this.state;
   }
@@ -32,7 +35,17 @@ class JsonStore {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     this.state.updatedAt = nowIso();
-    fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2));
+    const temporary = `${this.file}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+      fs.renameSync(temporary, this.file);
+    } catch (error) {
+      try { fs.unlinkSync(temporary); } catch {}
+      const wrapped = new Error(`Unable to save covenant store ${this.file}: ${error.message || error}`);
+      wrapped.code = "STORE_SAVE_FAILED";
+      wrapped.cause = error;
+      throw wrapped;
+    }
   }
 
   listEscrows() {

@@ -33,9 +33,20 @@ function shortAddress(address, head = 15, tail = 8) {
 }
 
 function kasToSompi(amountKas) {
-  const value = Number(amountKas);
-  if (!Number.isFinite(value) || value <= 0) return 0n;
-  return BigInt(Math.floor(value * Number(SOMPI_PER_KAS)));
+  let text;
+  if (typeof amountKas === "number") {
+    if (!Number.isFinite(amountKas) || amountKas <= 0) throw new TypeError("KAS amount must be a positive decimal value");
+    text = amountKas.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+  } else {
+    text = String(amountKas ?? "").trim();
+  }
+  const match = text.match(/^(\d+)(?:\.(\d+))?$/);
+  if (!match) throw new TypeError("KAS amount must be a positive decimal value");
+  const fraction = match[2] || "";
+  if (fraction.length > 8) throw new RangeError("KAS amount supports at most 8 decimal places");
+  const sompi = BigInt(match[1]) * SOMPI_PER_KAS + BigInt((fraction + "00000000").slice(0, 8));
+  if (sompi <= 0n) throw new RangeError("KAS amount must be greater than zero");
+  return sompi;
 }
 
 function sompiToKas(sompi) {
