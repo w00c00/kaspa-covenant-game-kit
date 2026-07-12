@@ -65,7 +65,8 @@ const kit = new KaspaCovenantGameKit({
   kascovLabBin,
   kascovLabExpectedSha256: mainnetRequested ? mainnetSettlementRunnerSha256 : process.env.KASCOV_LAB_EXPECTED_SHA256,
   kascovLabApprovedNetworks: [mainnetRequested ? "mainnet" : "tn10"],
-  kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile
+  kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile,
+  kascovLabJournalDir: path.join(dataDir, "settlement-journal")
 });
 const settlementFunding = mainnetRequested ? new SettlementFundingMonitor({
   address: verifier.address,
@@ -733,7 +734,8 @@ app.get("/api/config", async (_req, res) => {
         size: settlementRunnerHealth.size,
         network: settlementRunnerHealth.network,
         settleEscrow: settlementRunnerHealth.settleEscrow,
-        mainnetCapable: settlementRunnerHealth.mainnetCapable
+        mainnetCapable: settlementRunnerHealth.mainnetCapable,
+        durableJournal: settlementRunnerHealth.durableJournal
       }
     : { ready: false, code: settlementRunnerHealth.code || "RUNNER_UNAVAILABLE", reason: settlementRunnerHealth.reason };
   const staticEscrowReady = settlementRunnerHealth.ready && (!isMainnet || (

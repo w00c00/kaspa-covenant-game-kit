@@ -40,6 +40,8 @@ class KaspaCovenantGameKit {
         bin: options.kascovLabBin,
         env: options.kascovLabEnv,
         keyFile: options.kascovLabKeyFile,
+        journalDir: options.kascovLabJournalDir,
+        restApi: this.network.restApi,
         expectedBinSha256: options.kascovLabExpectedSha256,
         approvedNetworks: options.kascovLabApprovedNetworks || [this.network.id]
       }) : null);

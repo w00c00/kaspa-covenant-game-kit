@@ -77,6 +77,8 @@ async function assessMainnetReadiness(options = {}) {
       const adapter = options.runner || new KascovLabAdapter({
         bin: options.runnerBin || env.KASCOV_LAB_BIN || "kascov-lab",
         keyFile: options.runnerKeyFile || env.KASCOV_LAB_KEY_FILE || "",
+        journalDir: options.runnerJournalDir || env.KASCOV_LAB_JOURNAL_DIR || "",
+        restApi: options.runnerRestApi || env.KASPA_MAINNET_REST_API || "https://api.kaspa.org",
         expectedBinSha256: options.runnerSha256 || env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256 || "",
         approvedNetworks: ["mainnet"]
       });

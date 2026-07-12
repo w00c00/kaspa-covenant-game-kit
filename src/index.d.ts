@@ -170,6 +170,10 @@ export declare class KascovLabAdapter {
     bin?: string;
     env?: Record<string, string>;
     keyFile?: string;
+    journalDir?: string;
+    restApi?: string;
+    fetch?: (url: string, options?: Record<string, unknown>) => Promise<any>;
+    journalRetryAfterMs?: number;
     expectedBinSha256?: string;
     approvedNetworks?: string[];
   });
@@ -178,6 +182,16 @@ export declare class KascovLabAdapter {
   healthCheck(networkId: string, timeoutMs?: number): Promise<unknown>;
   settleEscrow(input: { programHex: string; releaseTo: "buyer" | "seller"; covenantId: string; timeoutMs?: number }): Promise<unknown>;
 }
+
+export declare function parseSettlementJournal(text: string): {
+  version: 1;
+  network: string;
+  covenantId: string;
+  releaseTo: "buyer" | "seller";
+  txid: string;
+  releasedSompi: bigint;
+  status: "prepared" | "submitted";
+};
 
 export declare const ESCROW_PROFILE_ID: "kascov-silverscript-escrow-skeleton-v1";
 export declare const SOURCE_LINKED_ESCROW_PROFILE_ID: "official-silverscript-escrow-source-linked-v2";

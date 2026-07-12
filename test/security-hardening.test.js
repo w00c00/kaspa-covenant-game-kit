@@ -21,6 +21,7 @@ const {
   assessMainnetReadiness,
   kasToSompi,
   parseKascovLabSettle,
+  parseSettlementJournal,
   resolveNetworkConfig,
   sha256Hex
 } = require("../src");
@@ -114,6 +115,81 @@ test("Kascov settlement output parses both TN10 and mainnet currency labels", ()
   assert.equal(parseKascovLabSettle(`tx ${txid}\n(0.5 KAS released)`).releasedKas, 0.5);
 });
 
+test("settlement journals are strict, network-bound recovery records", () => {
+  const txid = "4".repeat(64);
+  const covenantId = "5".repeat(64);
+  const journal = parseSettlementJournal([
+    "version=1",
+    "network=mainnet",
+    `covenant_id=${covenantId}`,
+    "release_to=seller",
+    `txid=${txid}`,
+    "released_sompi=123456789",
+    "status=prepared"
+  ].join("\n"));
+  assert.equal(journal.network, "mainnet");
+  assert.equal(journal.releasedSompi, 123456789n);
+  assert.throws(() => parseSettlementJournal(`version=1\nversion=1\nnetwork=mainnet\ncovenant_id=${covenantId}\nrelease_to=seller\ntxid=${txid}\nreleased_sompi=1\nstatus=prepared`), /repeats version/);
+  assert.throws(() => parseSettlementJournal(`version=1\nnetwork=mainnet\ncovenant_id=${covenantId}\nrelease_to=third-party\ntxid=${txid}\nreleased_sompi=1\nstatus=prepared`), /release side/);
+});
+
+test("a journaled transaction is verified and recovered before the runner can execute again", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-journal-recovery-"));
+  const runner = path.join(directory, "settlement-runner");
+  const journalDir = path.join(directory, "journal");
+  const covenantId = "7".repeat(64);
+  const txid = "8".repeat(64);
+  try {
+    fs.mkdirSync(journalDir);
+    fs.writeFileSync(runner, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+    fs.writeFileSync(path.join(journalDir, `${covenantId}.journal`), [
+      "version=1",
+      "network=mainnet",
+      `covenant_id=${covenantId}`,
+      "release_to=buyer",
+      `txid=${txid}`,
+      "released_sompi=250000000",
+      "status=prepared"
+    ].join("\n"), { mode: 0o600 });
+    let fetchCalls = 0;
+    const adapter = new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256: sha256Hex(fs.readFileSync(runner)),
+      approvedNetworks: ["mainnet"],
+      journalDir,
+      restApi: "https://api.example",
+      fetch: async () => {
+        fetchCalls += 1;
+        return { ok: true, status: 200, async json() { return { transaction_id: txid, is_accepted: true }; } };
+      }
+    });
+    const recovered = await adapter.settleEscrow({ programHex: "00", releaseTo: "buyer", covenantId });
+    assert.equal(fetchCalls, 1);
+    assert.equal(recovered.txid, txid);
+    assert.equal(recovered.releasedKas, 2.5);
+    assert.equal(recovered.recoveredFromJournal, true);
+
+    const pendingAdapter = new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256: sha256Hex(fs.readFileSync(runner)),
+      approvedNetworks: ["mainnet"],
+      journalDir,
+      restApi: "https://api.example",
+      fetch: async () => ({ ok: false, status: 404 })
+    });
+    await assert.rejects(
+      () => pendingAdapter.settleEscrow({ programHex: "00", releaseTo: "buyer", covenantId }),
+      (error) => error.code === "SETTLEMENT_BROADCAST_PENDING"
+    );
+    await assert.rejects(
+      () => pendingAdapter.settleEscrow({ programHex: "00", releaseTo: "seller", covenantId }),
+      (error) => error.code === "SETTLEMENT_JOURNAL_CONFLICT"
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("the vendored escrow generator exposes a reproducible program profile fingerprint", () => {
   const tools = new KascovTools();
   const profile = tools.escrowProgramProfile();
@@ -181,19 +257,34 @@ test("mainnet settlement runner requires an approved network, pinned binary and 
     fs.writeFileSync(runner, `#!/bin/sh
 case "$*" in
   "--help") echo 'mainnet settle-escrow runner' ;;
-  "settle-escrow --help") echo 'settle-escrow --network tn10 mainnet' ;;
-  *) echo "$*" >&2; echo 'tx ${"6".repeat(64)}'; echo '(0.5 KAS released)' ;;
+  "settle-escrow --help") echo 'settle-escrow --network tn10 mainnet --journal PATH' ;;
+  *)
+    journal=''
+    previous=''
+    for argument in "$@"; do
+      if [ "$previous" = '--journal' ]; then journal="$argument"; fi
+      previous="$argument"
+    done
+    mkdir -p "$(dirname "$journal")"
+    printf '%s\n' 'version=1' 'network=mainnet' 'covenant_id=${"11".repeat(32)}' 'release_to=buyer' 'txid=${"6".repeat(64)}' 'released_sompi=50000000' 'status=submitted' > "$journal"
+    echo "$*" >&2
+    echo 'tx ${"6".repeat(64)}'
+    echo '(0.5 KAS released)'
+    ;;
 esac
 `, { mode: 0o700 });
     const expectedBinSha256 = sha256Hex(fs.readFileSync(runner));
     const adapter = new KascovLabAdapter({
       bin: runner,
       expectedBinSha256,
-      approvedNetworks: ["mainnet"]
+      approvedNetworks: ["mainnet"],
+      journalDir: path.join(directory, "journal"),
+      restApi: "https://api.example"
     });
     const health = await adapter.healthCheck("mainnet");
     assert.equal(health.sha256, expectedBinSha256);
     assert.equal(health.mainnetCapable, true);
+    assert.equal(health.durableJournal, true);
     const settled = await adapter.settleEscrow({
       programHex: "00",
       releaseTo: "buyer",
@@ -251,7 +342,7 @@ test("mainnet preflight reports every blocker and becomes ready only with all cl
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-preflight-"));
   const runnerPath = path.join(directory, "mainnet-runner");
   try {
-    fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow --network runner'\n", { mode: 0o700 });
+    fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow --network --journal runner'\n", { mode: 0o700 });
     const tools = new KascovTools();
     const silverc = fakeSilverc();
     const report = await assessMainnetReadiness({
@@ -263,6 +354,8 @@ test("mainnet preflight reports every blocker and becomes ready only with all cl
       runnerApproved: true,
       runnerBin: runnerPath,
       runnerSha256: sha256Hex(fs.readFileSync(runnerPath)),
+      runnerJournalDir: path.join(directory, "journal"),
+      runnerRestApi: "https://api.example",
       kascovTools: tools,
       silverc
     });
