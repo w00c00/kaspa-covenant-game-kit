@@ -82,6 +82,7 @@ SDK 的地址、REST/wRPC、Explorer、match 和签名接口已经按网络配�
 ```dotenv
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+DATA_DIR=/opt/kaspa-snooker-mainnet/data
 KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
 KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<reviewed-profile-fingerprint>
 SILVERC_BIN=/opt/kaspa-snooker/bin/silverc
@@ -90,6 +91,10 @@ KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
 KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256=<reviewed-runner-sha256>
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
+
+主网闭测必须使用独立 `DATA_DIR`，不能与 TN10 共用 ledger、房间、faucet
+或 settlement verifier 数据。服务会校验 verifier 私钥、公钥、地址和网络，
+发现目录属于另一个网络时直接拒绝启动；主网模式也不会初始化 TN10 faucet。
 
 注意：当前随示例部署的 `kascov-lab` 释放器只按 TN10 验证。主网模式还需要官方 `silverc` 编译器、经过审查的 settlement runner，并分别通过 source-linked program profile 与 runner 两道许可；每位玩家硬限制最多 1 KAS。仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。
 

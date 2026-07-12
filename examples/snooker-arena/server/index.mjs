@@ -21,7 +21,7 @@ const snookerAdapter = require("./snooker-adapter.cjs");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "data");
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(root, "data");
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || "0.0.0.0";
 const networkId = process.env.KASPA_COVENANT_NETWORK || "tn10";
@@ -33,12 +33,12 @@ const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEM
 const mainnetSilvercSha256 = process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256 || "";
 const silvercBin = mainnetRequested ? process.env.SILVERC_BIN || "" : "";
 const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
-const faucet = new FaucetService({
+const faucet = mainnetRequested ? null : new FaucetService({
   dataDir,
   networkId: "testnet-10",
   restApi: process.env.TN10_REST_API || "https://api-tn10.kaspa.org"
 });
-const verifier = ensureSettlementVerifier(dataDir);
+const verifier = ensureSettlementVerifier(dataDir, mainnetRequested ? "mainnet" : "testnet-10");
 const bundledKascovLab = path.join(root, "bin", "kascov-lab");
 const configuredKascovLabBin = process.env.KASCOV_LAB_BIN || (fs.existsSync(bundledKascovLab) ? bundledKascovLab : "");
 const kascovLabBin = mainnetRequested && !mainnetSettlementRunnerApproved ? "" : configuredKascovLabBin;

@@ -66,6 +66,8 @@ the corresponding pinned local and Linux builds.
 - deploy a durable database-backed store and a single settlement worker;
 - add monitoring for lock confirmation, settlement retries and balance drift;
 - use a dedicated low-balance verifier key and rehearse key rotation;
+- run the mainnet service with a dedicated `DATA_DIR`; verifier identity/network
+  mismatch is a startup error and the TN10 faucet is never initialized there;
 - complete a 7-day TN10 soak with forced restarts and RPC failures.
 
 ## Required before public mainnet use
