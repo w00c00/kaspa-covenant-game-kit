@@ -685,6 +685,10 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, network: kit.network 
 
 app.get("/api/config", (_req, res) => {
   const isMainnet = kit.network.id === "mainnet";
+  const mainnetStakeCap = Math.min(1, Number(mainnetMaxStakeKas));
+  const mainnetStakeOptions = [...new Set([0.001, 0.005, 0.01, 0.05, 0.1, mainnetStakeCap])]
+    .filter((stake) => Number.isFinite(stake) && stake > 0 && stake <= mainnetStakeCap)
+    .sort((left, right) => left - right);
   const publicRunnerHealth = settlementRunnerHealth.ready
     ? {
         ready: true,
@@ -710,7 +714,7 @@ app.get("/api/config", (_req, res) => {
       sourceCompilerHealth.ready && kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved
     )),
     faucetAvailable: kit.network.isTestnet,
-    stakeOptions: isMainnet ? [0.01, 0.05, 0.1, Math.min(1, Number(mainnetMaxStakeKas))] : [5, 25, 50, 100],
+    stakeOptions: isMainnet ? mainnetStakeOptions : [5, 25, 50, 100],
     mainnetGuarded: true,
     mainnetReadiness: {
       mode: isMainnet ? "closed-test" : "tn10",
