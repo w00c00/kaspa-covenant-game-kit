@@ -206,6 +206,8 @@ function applyLanguage() {
   document.documentElement.lang = model.language === "en" ? "en" : "zh-CN";
   $("#language-toggle").textContent = model.language === "en" ? "中文" : "EN";
   $("#language-toggle").setAttribute("aria-label", tr("Switch to English", "切换到中文"));
+  $("#copy-room").setAttribute("aria-label", tr("复制房间号", "Copy room code"));
+  if (roomId) $("#copy-room").innerHTML = `${tr("私人房", "PRIVATE ROOM")} · ${roomId} ${icon("copy")}`;
   $(".lobby-hero h1").innerHTML = tr("链上斯诺克<br/><span>每一杆，都算数。</span>", "ON-CHAIN SNOOKER<br/><span>EVERY SHOT COUNTS.</span>");
   setNodeText(".lobby-hero > p", "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。", "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner.");
   setNodeText("#create-room", "创建对战房间", "Create match");
@@ -253,6 +255,7 @@ function applyLanguage() {
   if (!(model.lastState?.visits?.length)) $("#activity").innerHTML = tr("<div class=\"activity-empty\">开球后，这里会生成可验证的<br/>压缩对局记录</div>", "<div class=\"activity-empty\">A verifiable compressed transcript<br/>will appear after the opening shot.</div>");
   $("#settings").setAttribute("aria-label", tr("游戏设置", "Game settings"));
   $("#modal-close").setAttribute("aria-label", tr("关闭", "Close"));
+  if (!$("#modal").classList.contains("open")) setNodeText("#modal-title", "链上托管方案", "On-chain escrow plan");
   if (!model.wallet) setNodeText("#wallet", "连接钱包", "Connect wallet");
   engine?.setLocale(model.language);
   if (model.lastState) updateState(model.lastState);
@@ -265,6 +268,12 @@ function applyLanguage() {
 function short(value, head = 11, tail = 6) {
   if (!value || value.length < head + tail + 3) return value || "—";
   return `${value.slice(0, head)}…${value.slice(-tail)}`;
+}
+
+function displayPlayerName(player, emptyZh = "等待玩家", emptyEn = "Waiting for player") {
+  if (!player) return tr(emptyZh, emptyEn);
+  if (!player.address && ["访客球手", "Guest player"].includes(player.name)) return tr("访客球手", "Guest player");
+  return player.name || tr("访客球手", "Guest player");
 }
 
 function showMessage(text, type = "neutral") {
@@ -470,7 +479,7 @@ function updateWaitingRoom(room) {
     const node = $(`#waiting-seat-${seat}`);
     const player = room.players.find((item) => item.seat === seat);
     node.classList.toggle("occupied", Boolean(player));
-    node.querySelector("h3").textContent = player?.name || tr("等待玩家", "Waiting for player");
+    node.querySelector("h3").textContent = displayPlayerName(player);
     node.querySelector("p").textContent = player?.address ? short(player.address) : (player ? tr("演示身份", "Demo identity") : tr("尚未加入", "Not joined"));
     const flags = node.querySelectorAll(".seat-flags span");
     const lockLabels = {
@@ -569,7 +578,8 @@ socket.on("connect", () => {
 });
 socket.on("lobby:rooms", renderLobbyRooms);
 socket.on("room:player-joined", ({ player }) => {
-  showMessage(tr(`${player?.name || `Player ${Number(player?.seat) + 1}`} 已进入房间`, `${player?.name || `Player ${Number(player?.seat) + 1}`} joined the room`), "score");
+  const name = displayPlayerName(player, `Player ${Number(player?.seat) + 1}`, `Player ${Number(player?.seat) + 1}`);
+  showMessage(tr(`${name} 已进入房间`, `${name} joined the room`), "score");
 });
 socket.on("room:player-signed", ({ seat }) => {
   showMessage(tr(`Player ${Number(seat) + 1} 已提交锁仓签名 · 等待另一方`, `Player ${Number(seat) + 1} signed the escrow · Waiting for the other player`), "score");
@@ -583,7 +593,9 @@ socket.on("room:state", (room) => {
   for (const seat of [0, 1]) {
     const live = model.livePlayers.find((player) => player.seat === seat);
     const isLocal = live?.playerId === playerId;
-    const name = isLocal ? (model.wallet ? "YOU" : tr("访客球手", "Guest player")) : (live?.name || (seat === 0 ? tr("访客球手", "Guest player") : tr("等待对手", "Waiting for opponent")));
+    const name = isLocal
+      ? (model.wallet ? "YOU" : tr("访客球手", "Guest player"))
+      : displayPlayerName(live, seat === 0 ? "访客球手" : "等待对手", seat === 0 ? "Guest player" : "Waiting for opponent");
     $(`#player-${seat === 0 ? "name" : "1-name"}`).textContent = name;
     const addressNode = seat === 0 ? $("#player-address") : $("#player-1-address");
     addressNode.textContent = live?.address ? short(live.address) : (live ? tr("已加入私人房", "Joined private room") : tr("分享房间链接邀请好友", "Share the room link to invite a friend"));
