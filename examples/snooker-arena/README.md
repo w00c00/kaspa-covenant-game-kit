@@ -84,12 +84,14 @@ KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
 KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
 KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<reviewed-profile-fingerprint>
+SILVERC_BIN=/opt/kaspa-snooker/bin/silverc
+KASPA_COVENANT_MAINNET_SILVERC_SHA256=<reviewed-silverc-sha256>
 KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
 KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256=<reviewed-runner-sha256>
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
-注意：当前随示例部署的 `kascov-lab` 释放器只按 TN10 验证。主网模式还需要经过审查的 settlement runner，并分别打开 program profile 与 runner 两道许可；默认每位玩家最多 1 KAS。仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。
+注意：当前随示例部署的 `kascov-lab` 释放器只按 TN10 验证。主网模式还需要官方 `silverc` 编译器、经过审查的 settlement runner，并分别通过 source-linked program profile 与 runner 两道许可；每位玩家硬限制最多 1 KAS。仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。
 
 ## 主要目录
 
@@ -103,6 +105,7 @@ server/settlement-verifier.mjs     自动结算密钥初始化
 server/snooker-adapter.cjs         SDK 游戏 adapter
 sdk/                               kaspa-covenant-game-kit
 bin/kascov-lab                     TN10 自动释放器（按部署平台编译）
+bin/silverc                        官方 SilverScript 编译器（主网闭测必需）
 ```
 
 TN10 仍属于实验环境。上线主网前需要完成双钱包真机联调、异常断线/退款策略、合约和结算 runner 独立安全审计。

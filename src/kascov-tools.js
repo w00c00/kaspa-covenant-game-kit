@@ -8,6 +8,7 @@ const { isHex32, normalizeHex, normalizeXOnlyPublicKey, sha256Hex } = require(".
 const DEFAULT_BLAKE2B_FILE = path.join(__dirname, "..", "vendor", "kascov-blake2b.js");
 const DEFAULT_DISASM_FILE = path.join(__dirname, "..", "vendor", "kascov-disasm.js");
 const ESCROW_PROFILE_ID = "kascov-silverscript-escrow-skeleton-v1";
+const SOURCE_LINKED_ESCROW_PROFILE_ID = "official-silverscript-escrow-source-linked-v2";
 const ESCROW_SKELETON_NAME = "SilverScript · Escrow";
 
 function bytesFromHex(hex) {
@@ -39,29 +40,43 @@ class KascovTools {
     return Buffer.from(blake2b256(Uint8Array.from(bytesFromHex(hex)))).toString("hex");
   }
 
-  escrowProgramProfile() {
+  escrowProgramProfile(options = {}) {
     const { disasm } = this.load();
     const skeleton = disasm.skeletonInfo(ESCROW_SKELETON_NAME);
     if (!skeleton?.emitVerified) throw new Error("Vendored Kascov escrow skeleton failed its reproduction self-check");
+    const compiler = options.compilerManifest || null;
     const manifest = {
-      id: ESCROW_PROFILE_ID,
-      version: 1,
+      id: compiler ? SOURCE_LINKED_ESCROW_PROFILE_ID : ESCROW_PROFILE_ID,
+      version: compiler ? 2 : 1,
       skeletonName: ESCROW_SKELETON_NAME,
       generator: "vendored-kascov-disasm-skeleton",
       generatorSha256: sha256Hex(fs.readFileSync(this.disasmFile)),
       blake2bSha256: sha256Hex(fs.readFileSync(this.blake2bFile)),
       parameters: (skeleton.params || []).map(({ name, kind, source }) => ({ name, kind, source })),
       emitVerified: true,
-      contractSourceLinked: false
+      contractSourceLinked: Boolean(compiler)
     };
+    if (compiler) {
+      manifest.sourceCompiler = {
+        compiler: compiler.compiler,
+        compilerVersion: compiler.compilerVersion,
+        compilerSha256: compiler.compilerSha256,
+        compilerFileName: compiler.compilerFileName,
+        compilerSize: compiler.compilerSize,
+        upstreamCommit: compiler.upstreamCommit,
+        sourceFileName: compiler.sourceFileName,
+        sourceSha256: compiler.sourceSha256,
+        contractSourceLinked: true
+      };
+    }
     return {
       ...manifest,
       fingerprint: sha256Hex(JSON.stringify(manifest))
     };
   }
 
-  verifyEscrowProgramProfile(expectedFingerprint) {
-    const profile = this.escrowProgramProfile();
+  verifyEscrowProgramProfile(expectedFingerprint, options = {}) {
+    const profile = this.escrowProgramProfile(options);
     if (!isHex32(expectedFingerprint) || normalizeHex(expectedFingerprint) !== profile.fingerprint) {
       const error = new Error("Covenant program profile fingerprint does not match the current vendored generator");
       error.code = "PROGRAM_PROFILE_MISMATCH";
@@ -89,6 +104,7 @@ class KascovTools {
 module.exports = {
   ESCROW_PROFILE_ID,
   ESCROW_SKELETON_NAME,
+  SOURCE_LINKED_ESCROW_PROFILE_ID,
   KascovTools,
   bytesFromHex
 };

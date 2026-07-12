@@ -3,6 +3,7 @@
 const { DEFAULT_NETWORKS } = require("./constants");
 const { KascovTools } = require("./kascov-tools");
 const { resolveNetworkConfig } = require("./network");
+const { SilvercAdapter } = require("./silverc-adapter");
 const {
   covenantStoryUrl,
   explorerTxUrl,
@@ -98,7 +99,14 @@ class CovenantEscrowEngine {
       network: options.network || DEFAULT_NETWORKS[options.networkId || "tn10"]
     });
     this.kascovTools = options.kascovTools || new KascovTools(options.kascovToolsOptions || {});
-    this.programProfile = this.kascovTools.escrowProgramProfile();
+    this.silverc = options.silverc || (options.silvercBin ? new SilvercAdapter({
+      bin: options.silvercBin,
+      env: options.silvercEnv,
+      sourceFile: options.silvercSourceFile,
+      expectedBinSha256: options.silvercExpectedSha256
+    }) : null);
+    const compilerManifest = this.silverc ? this.silverc.profileManifest() : null;
+    this.programProfile = this.kascovTools.escrowProgramProfile({ compilerManifest });
     this.arbiter = options.arbiter || {};
     this.computeBudget = Number(options.computeBudget || DEFAULT_COMPUTE_BUDGET);
     this.feeShareSompi = BigInt(options.feeShareSompi || DEFAULT_FEE_SHARE_SOMPI);
@@ -119,6 +127,7 @@ class CovenantEscrowEngine {
       options.mainnetProgramProfileFingerprint || process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT || ""
     );
     this.mainnetProgramProfileApproved = programProfileApproval &&
+      this.programProfile.contractSourceLinked &&
       this.mainnetProgramProfileFingerprint === this.programProfile.fingerprint;
     this.fetchUtxos = options.fetchUtxos || this.fetchSpendableUtxos.bind(this);
     this.submitTransaction = options.submitTransaction || this.submitSignedTransactionWrpc.bind(this);
@@ -299,12 +308,24 @@ class CovenantEscrowEngine {
     }
 
     const stakeSompi = BigInt(intent.stakeSompi);
+    if (this.network.id === "mainnet" && !this.silverc) {
+      const error = new Error("Mainnet covenant drafts require the pinned official SilverScript compiler");
+      error.code = "MAINNET_SOURCE_COMPILER_REQUIRED";
+      throw error;
+    }
     if (this.network.id === "mainnet" && !this.mainnetProgramProfileApproved) {
       const error = new Error("Mainnet covenant program profile approval or fingerprint is missing or mismatched");
       error.code = "MAINNET_PROGRAM_PROFILE_NOT_APPROVED";
       error.actualFingerprint = this.programProfile.fingerprint;
       error.expectedFingerprint = this.mainnetProgramProfileFingerprint;
       throw error;
+    }
+    if (this.network.id === "mainnet") {
+      await this.silverc.verifyEscrow({
+        arbiterHash: this.arbiter.arbiterHash,
+        buyerPublicKey: intent.buyer.publicKey,
+        sellerPublicKey: intent.seller.publicKey
+      }, intent.programHex);
     }
     if (this.maxStakeSompi && stakeSompi > this.maxStakeSompi) {
       throw new Error(`Mainnet test stake exceeds the configured safety cap of ${sompiToKas(this.maxStakeSompi)} KAS per player`);
@@ -315,7 +336,7 @@ class CovenantEscrowEngine {
       const required = stakeSompi + this.feeShareSompi;
       const utxo = utxos.find((item) => item.amount >= required);
       if (!utxo) {
-        const error = new Error(`${player.shortAddress} has no spendable UTXO >= ${sompiToKas(required)} TN10 KAS`);
+        const error = new Error(`${player.shortAddress} has no spendable UTXO >= ${sompiToKas(required)} ${this.network.currencySymbol || "KAS"}`);
         error.intent = intent;
         error.player = player;
         throw error;

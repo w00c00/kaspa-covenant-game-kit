@@ -8,7 +8,9 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 
 > Mainnet safety: `allowMainnet` only enables the network preset. Building a
 > mainnet funding draft additionally requires `mainnetProgramProfileApproved`
-> plus the exact reviewed profile fingerprint. Closed-test builds enforce a hard
+> plus the exact reviewed, source-linked profile fingerprint. The SDK recompiles
+> every mainnet Escrow instance with a hash-pinned official `silverc` binary and
+> rejects any byte difference. Closed-test builds enforce a hard
 > maximum of 1 KAS per player. This is for closed testing, not
 > a claim that the covenant program has completed an independent audit.
 
@@ -61,7 +63,7 @@ const kit = new KaspaCovenantGameKit({
     publicKey: process.env.ARBITER_PUBLIC_KEY,
     arbiterHash: process.env.ARBITER_HASH
   },
-  contractFile: "./contracts/gomoku_escrow.sil"
+  contractFile: "./contracts/escrow.sil"
 });
 
 const state = kit.createState("my-game");
@@ -84,6 +86,8 @@ KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
 KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
 KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<64-char-reviewed-profile-fingerprint>
+SILVERC_BIN=/absolute/path/to/silverc
+KASPA_COVENANT_MAINNET_SILVERC_SHA256=<64-char-reviewed-compiler-sha256>
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
@@ -97,6 +101,8 @@ const mainnetKit = new KaspaCovenantGameKit({
   allowMainnet: true,
   mainnetProgramProfileApproved: true,
   mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
+  silvercBin: process.env.SILVERC_BIN,
+  silvercExpectedSha256: process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256,
   mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
@@ -117,12 +123,19 @@ After configuring the reviewed program and runner, execute the read-only gate:
 npm run mainnet:preflight
 ```
 
-Print the exact vendored generator manifest and fingerprint that must be
-reviewed and pinned before a mainnet draft can be built:
+With the pinned official compiler configured, print the exact source-linked
+manifest and fingerprint that must be reviewed before a mainnet draft can be
+built:
 
 ```bash
 node examples/program-profile.js
 ```
+
+The profile pins SilverScript commit
+`956868ea63a2af4176889f1331449b5f4f9e1df8`, the official Escrow source hash,
+the local `silverc` executable hash, and the reproduced program generator.
+Without `SILVERC_BIN` and its matching SHA-256, the command exits non-zero and
+the SDK will not approve a mainnet funding draft.
 
 Mainnet settlement runners are independently guarded: the executable SHA-256
 must be pinned, `mainnet` must be in its approved-network list, and a read-only

@@ -10,6 +10,7 @@ class ProofBuilder {
     this.contractName = options.contractName || "gomoku_escrow.sil";
     this.contractSource = options.contractSource || "";
     this.contractFile = options.contractFile || "";
+    this.programProfile = options.programProfile || null;
     this.docs = options.docs || DEFAULT_DOCS;
     this.network = options.network || {};
   }
@@ -44,8 +45,11 @@ class ProofBuilder {
       productionNetwork: "mainnet",
       contractName: this.contractName,
       contractSourceHash: source ? sha256Hex(source) : "",
-      contractSourceLinked: false,
-      contractSourceRole: "documentation-only-until-compiler-pipeline-is-enabled",
+      contractSourceLinked: Boolean(this.programProfile?.contractSourceLinked),
+      contractSourceRole: this.programProfile?.contractSourceLinked
+        ? "official-source-recompiled-and-byte-verified"
+        : "documentation-only-until-source-compiler-is-configured",
+      programProfileFingerprint: this.programProfile?.fingerprint || "",
       transcriptHash: hash,
       players,
       winner: winnerAddress,

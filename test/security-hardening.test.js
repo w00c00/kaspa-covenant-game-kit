@@ -15,6 +15,8 @@ const {
   KascovTools,
   ProofBuilder,
   SettlementEngine,
+  SILVERSCRIPT_ESCROW_SOURCE_SHA256,
+  SilvercAdapter,
   TRANSCRIPT_VERSION,
   assessMainnetReadiness,
   kasToSompi,
@@ -22,6 +24,30 @@ const {
   resolveNetworkConfig,
   sha256Hex
 } = require("../src");
+
+const SOURCE_COMPILER_MANIFEST = Object.freeze({
+  compiler: "silverc",
+  compilerVersion: "0.1.0",
+  compilerSha256: "77".repeat(32),
+  compilerFileName: "silverc",
+  compilerSize: 123,
+  upstreamCommit: "956868ea63a2af4176889f1331449b5f4f9e1df8",
+  sourceFileName: "escrow.sil",
+  sourceSha256: SILVERSCRIPT_ESCROW_SOURCE_SHA256,
+  contractSourceLinked: true
+});
+
+function fakeSilverc() {
+  return {
+    profileManifest: () => ({ ...SOURCE_COMPILER_MANIFEST }),
+    healthCheck: async () => ({ ...SOURCE_COMPILER_MANIFEST, ready: true, testVectorProgramSha256: "88".repeat(32) }),
+    verifyEscrow: async (_input, expectedProgramHex) => ({ programHex: expectedProgramHex })
+  };
+}
+
+function linkedProgramFingerprint(tools = new KascovTools()) {
+  return tools.escrowProgramProfile({ compilerManifest: SOURCE_COMPILER_MANIFEST }).fingerprint;
+}
 
 function fundedPlayer(transactionByte, networkId = "testnet-10") {
   const keypair = kaspa.Keypair.random();
@@ -95,6 +121,10 @@ test("the vendored escrow generator exposes a reproducible program profile finge
   assert.match(profile.generatorSha256, /^[0-9a-f]{64}$/);
   assert.equal(profile.contractSourceLinked, false);
   assert.equal(profile.emitVerified, true);
+  const linked = tools.escrowProgramProfile({ compilerManifest: SOURCE_COMPILER_MANIFEST });
+  assert.equal(linked.contractSourceLinked, true);
+  assert.equal(linked.sourceCompiler.sourceSha256, SILVERSCRIPT_ESCROW_SOURCE_SHA256);
+  assert.notEqual(linked.fingerprint, profile.fingerprint);
   assert.deepEqual(tools.verifyEscrowProgramProfile(profile.fingerprint), profile);
   assert.throws(() => tools.verifyEscrowProgramProfile("00".repeat(32)), (error) =>
     error.code === "PROGRAM_PROFILE_MISMATCH" && error.actualFingerprint === profile.fingerprint
@@ -108,6 +138,37 @@ test("the vendored escrow generator exposes a reproducible program profile finge
     fs.appendFileSync(disasmFile, "\n// fingerprint mutation test\n");
     const changed = new KascovTools({ disasmFile, blake2bFile }).escrowProgramProfile();
     assert.notEqual(changed.fingerprint, profile.fingerprint);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the pinned official SilverScript compiler reproduces the escrow skeleton", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "silverc-adapter-"));
+  const compiler = path.join(directory, "silverc");
+  const source = path.join(__dirname, "..", "contracts", "escrow.sil");
+  const tools = new KascovTools();
+  const vector = {
+    arbiterHash: "11".repeat(32),
+    buyerPublicKey: "22".repeat(32),
+    sellerPublicKey: "33".repeat(32)
+  };
+  const script = Array.from(Buffer.from(tools.emitEscrowProgramHex(vector), "hex"));
+  const artifact = JSON.stringify({ contract_name: "Escrow", compiler_version: "0.1.0", script });
+  try {
+    fs.writeFileSync(compiler, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(artifact)});\n`, { mode: 0o700 });
+    const adapter = new SilvercAdapter({
+      bin: compiler,
+      sourceFile: source,
+      expectedBinSha256: sha256Hex(fs.readFileSync(compiler))
+    });
+    const health = await adapter.healthCheck(tools);
+    assert.equal(health.ready, true);
+    assert.equal(health.sourceSha256, SILVERSCRIPT_ESCROW_SOURCE_SHA256);
+    const compiled = await adapter.compileEscrow(vector);
+    assert.equal(compiled.programHex, tools.emitEscrowProgramHex(vector));
+    fs.appendFileSync(compiler, "// mutation\n");
+    await assert.rejects(() => adapter.compileEscrow(vector), (error) => error.code === "SILVERC_HASH_MISMATCH");
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -179,16 +240,18 @@ test("mainnet preflight reports every blocker and becomes ready only with all cl
   try {
     fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow runner'\n", { mode: 0o700 });
     const tools = new KascovTools();
+    const silverc = fakeSilverc();
     const report = await assessMainnetReadiness({
       env: {},
       allowMainnet: true,
       programProfileApproved: true,
-      programProfileFingerprint: tools.escrowProgramProfile().fingerprint,
+      programProfileFingerprint: linkedProgramFingerprint(tools),
       maxStakeKas: "0.1",
       runnerApproved: true,
       runnerBin: runnerPath,
       runnerSha256: sha256Hex(fs.readFileSync(runnerPath)),
-      kascovTools: tools
+      kascovTools: tools,
+      silverc
     });
     assert.equal(report.ready, true);
     assert.deepEqual(report.blockers, []);
@@ -235,12 +298,14 @@ test("custom configurations that point at mainnet still require explicit approva
 test("mainnet test mode enforces a small per-player stake cap by default", async () => {
   const first = fundedPlayer("c", "mainnet");
   const second = fundedPlayer("d", "mainnet");
-  const programProfileFingerprint = new KascovTools().escrowProgramProfile().fingerprint;
+  const silverc = fakeSilverc();
+  const programProfileFingerprint = linkedProgramFingerprint();
   const engine = new CovenantEscrowEngine({
     network: DEFAULT_NETWORKS.mainnet,
     allowMainnet: true,
     mainnetProgramProfileApproved: true,
     mainnetProgramProfileFingerprint: programProfileFingerprint,
+    silverc,
     arbiter: { arbiterHash: new KascovTools().blake2b256Hex("44".repeat(32)) },
     fetchUtxos: async () => []
   });
@@ -274,6 +339,7 @@ test("mainnet draft building requires a separately approved covenant program pro
   const engine = new CovenantEscrowEngine({
     network: DEFAULT_NETWORKS.mainnet,
     allowMainnet: true,
+    silverc: fakeSilverc(),
     arbiter: { arbiterHash: new KascovTools().blake2b256Hex("55".repeat(32)) },
     fetchUtxos: async () => []
   });
@@ -291,6 +357,32 @@ test("mainnet draft building requires a separately approved covenant program pro
   }), /profile approval or fingerprint is missing or mismatched/);
 });
 
+test("mainnet draft building refuses a generator-only profile without the official compiler", async () => {
+  const first = fundedPlayer("7", "mainnet");
+  const second = fundedPlayer("8", "mainnet");
+  const tools = new KascovTools();
+  const engine = new CovenantEscrowEngine({
+    network: DEFAULT_NETWORKS.mainnet,
+    allowMainnet: true,
+    mainnetProgramProfileApproved: true,
+    mainnetProgramProfileFingerprint: tools.escrowProgramProfile().fingerprint,
+    arbiter: { arbiterHash: tools.blake2b256Hex("77".repeat(32)) },
+    fetchUtxos: async () => []
+  });
+  await assert.rejects(() => engine.buildPlayerFundedDeployDraft({
+    id: "MAINNET-NO-COMPILER",
+    roundId: "ROUND-1",
+    game: "duel",
+    stakeKas: "0.1",
+    players: [first, second].map((player, seat) => ({
+      seat,
+      role: `player-${seat + 1}`,
+      address: player.address,
+      publicKey: player.keypair.xOnlyPublicKey
+    }))
+  }), (error) => error.code === "MAINNET_SOURCE_COMPILER_REQUIRED");
+});
+
 test("mainnet rejects an approval for a different program profile fingerprint", async () => {
   const first = fundedPlayer("1", "mainnet");
   const second = fundedPlayer("2", "mainnet");
@@ -299,6 +391,7 @@ test("mainnet rejects an approval for a different program profile fingerprint", 
     allowMainnet: true,
     mainnetProgramProfileApproved: true,
     mainnetProgramProfileFingerprint: "00".repeat(32),
+    silverc: fakeSilverc(),
     arbiter: { arbiterHash: new KascovTools().blake2b256Hex("66".repeat(32)) },
     fetchUtxos: async () => []
   });

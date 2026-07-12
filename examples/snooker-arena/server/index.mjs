@@ -16,6 +16,7 @@ import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
 const require = createRequire(import.meta.url);
 const kaspa = require("@kluster/kaspa-wasm");
 const { JsonStore, KaspaCovenantGameKit } = require("kaspa-covenant-game-kit");
+const sdkRoot = path.resolve(path.dirname(require.resolve("kaspa-covenant-game-kit")), "..");
 const snookerAdapter = require("./snooker-adapter.cjs");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,8 @@ const mainnetProgramProfileApproved = process.env.KASPA_COVENANT_MAINNET_PROGRAM
 const mainnetProgramProfileFingerprint = process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT || "";
 const mainnetSettlementRunnerApproved = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED === "true";
 const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256 || "";
+const mainnetSilvercSha256 = process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256 || "";
+const silvercBin = mainnetRequested ? process.env.SILVERC_BIN || "" : "";
 const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
 const faucet = new FaucetService({
   dataDir,
@@ -53,13 +56,22 @@ const kit = new KaspaCovenantGameKit({
     publicKey: process.env.ARBITER_PUBLIC_KEY || verifier.publicKey,
     arbiterHash: process.env.ARBITER_HASH || verifier.arbiterHash
   },
-  contractName: "snooker_escrow.sil",
-  contractFile: path.join(root, "contracts", "snooker_escrow.sil"),
+  contractName: "escrow.sil",
+  contractFile: path.join(sdkRoot, "contracts", "escrow.sil"),
+  silvercBin,
+  silvercExpectedSha256: mainnetSilvercSha256,
+  silvercSourceFile: path.join(sdkRoot, "contracts", "escrow.sil"),
   kascovLabBin,
   kascovLabExpectedSha256: mainnetRequested ? mainnetSettlementRunnerSha256 : process.env.KASCOV_LAB_EXPECTED_SHA256,
   kascovLabApprovedNetworks: [mainnetRequested ? "mainnet" : "tn10"],
   kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile
 });
+
+let sourceCompilerHealth = { ready: false, reason: mainnetRequested ? "compiler-not-configured" : "not-required-on-tn10" };
+if (mainnetRequested) {
+  if (!kit.escrow.silverc) throw new Error("Mainnet startup requires SILVERC_BIN and a pinned compiler SHA-256");
+  sourceCompilerHealth = { ready: true, ...(await kit.escrow.silverc.healthCheck(kit.escrow.kascovTools)) };
+}
 
 let settlementRunnerHealth = { ready: false, reason: kascovLabBin ? "not-checked" : "runner-not-configured" };
 if (kit.kascovLab) {
@@ -694,7 +706,9 @@ app.get("/api/config", (_req, res) => {
       explorer: kit.network.kascovExplorerBase
     },
     chainMode: settlementRunnerHealth.ready ? "live" : "unavailable",
-    escrowReady: settlementRunnerHealth.ready && (!isMainnet || (kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved)),
+    escrowReady: settlementRunnerHealth.ready && (!isMainnet || (
+      sourceCompilerHealth.ready && kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved
+    )),
     faucetAvailable: kit.network.isTestnet,
     stakeOptions: isMainnet ? [0.01, 0.05, 0.1, Math.min(1, Number(mainnetMaxStakeKas))] : [5, 25, 50, 100],
     mainnetGuarded: true,
@@ -703,6 +717,14 @@ app.get("/api/config", (_req, res) => {
       programProfileApproved: !isMainnet || kit.escrow.mainnetProgramProfileApproved,
       programProfileFingerprint: kit.escrow.programProfile.fingerprint,
       configuredProgramProfileFingerprint: isMainnet ? mainnetProgramProfileFingerprint : "",
+      sourceCompiler: isMainnet ? {
+        ready: sourceCompilerHealth.ready,
+        compilerVersion: sourceCompilerHealth.compilerVersion,
+        compilerSha256: sourceCompilerHealth.compilerSha256,
+        upstreamCommit: sourceCompilerHealth.upstreamCommit,
+        sourceSha256: sourceCompilerHealth.sourceSha256,
+        testVectorProgramSha256: sourceCompilerHealth.testVectorProgramSha256
+      } : { ready: false, reason: sourceCompilerHealth.reason },
       settlementRunnerApproved: !isMainnet || mainnetSettlementRunnerApproved,
       settlementRunnerHealth: publicRunnerHealth,
       maxStakeKas: isMainnet ? Number(mainnetMaxStakeKas) : null

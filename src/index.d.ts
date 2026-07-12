@@ -54,6 +54,7 @@ export interface CovenantProgramProfile {
   parameters: Array<{ name: string; kind: string; source: string }>;
   emitVerified: boolean;
   contractSourceLinked: boolean;
+  sourceCompiler?: SilvercManifest;
   fingerprint: string;
   mainnetApproved?: boolean;
 }
@@ -176,19 +177,48 @@ export declare class KascovLabAdapter {
 }
 
 export declare const ESCROW_PROFILE_ID: "kascov-silverscript-escrow-skeleton-v1";
+export declare const SOURCE_LINKED_ESCROW_PROFILE_ID: "official-silverscript-escrow-source-linked-v2";
 export declare const ESCROW_SKELETON_NAME: "SilverScript · Escrow";
 export declare class KascovTools {
   constructor(options?: { blake2bFile?: string; disasmFile?: string });
   blake2b256Hex(hex: string): string;
-  escrowProgramProfile(): CovenantProgramProfile;
-  verifyEscrowProgramProfile(expectedFingerprint: string): CovenantProgramProfile;
+  escrowProgramProfile(options?: { compilerManifest?: SilvercManifest | null }): CovenantProgramProfile;
+  verifyEscrowProgramProfile(expectedFingerprint: string, options?: { compilerManifest?: SilvercManifest | null }): CovenantProgramProfile;
   emitEscrowProgramHex(input: { arbiterHash: string; buyerPublicKey: string; sellerPublicKey: string }): string;
+}
+
+export interface SilvercManifest {
+  compiler: "silverc";
+  compilerVersion: string;
+  compilerSha256: string;
+  compilerFileName: string;
+  compilerSize: number;
+  upstreamCommit: string;
+  sourceFileName: string;
+  sourceSha256: string;
+  contractSourceLinked: true;
+}
+export declare const SILVERC_COMPILER_VERSION: "0.1.0";
+export declare const SILVERSCRIPT_UPSTREAM_COMMIT: "956868ea63a2af4176889f1331449b5f4f9e1df8";
+export declare const SILVERSCRIPT_ESCROW_SOURCE_SHA256: "1b943812d68f674d36bf409d8118c38128ebf57d8098be995bab487b56b5a975";
+export declare class SilvercAdapter {
+  constructor(options?: {
+    bin?: string;
+    env?: Record<string, string>;
+    sourceFile?: string;
+    expectedBinSha256?: string;
+  });
+  profileManifest(): SilvercManifest;
+  compileEscrow(input: { arbiterHash: string; buyerPublicKey: string; sellerPublicKey: string; timeoutMs?: number }): Promise<SilvercManifest & { contractName: string; programHex: string; programSha256: string }>;
+  verifyEscrow(input: { arbiterHash: string; buyerPublicKey: string; sellerPublicKey: string }, expectedProgramHex: string): Promise<unknown>;
+  healthCheck(kascovTools: KascovTools): Promise<SilvercManifest & { testVectorProgramSha256: string; ready: true }>;
 }
 
 export interface MainnetReadinessReport {
   mode: "mainnet-closed-test";
   ready: boolean;
   profile: CovenantProgramProfile;
+  sourceCompiler: unknown;
   configuredFingerprint: string;
   maxStakeKas: number | null;
   runner: unknown;
@@ -201,6 +231,10 @@ export declare function assessMainnetReadiness(options?: {
   programProfileApproved?: boolean;
   programProfileFingerprint?: string;
   maxStakeKas?: KasAmount;
+  silverc?: SilvercAdapter;
+  silvercBin?: string;
+  silvercSourceFile?: string;
+  silvercSha256?: string;
   runnerApproved?: boolean;
   runner?: KascovLabAdapter;
   runnerBin?: string;
@@ -230,6 +264,10 @@ export declare class KaspaCovenantGameKit {
     kascovLabBin?: string;
     kascovLabExpectedSha256?: string;
     kascovLabApprovedNetworks?: string[];
+    silverc?: SilvercAdapter | null;
+    silvercBin?: string;
+    silvercExpectedSha256?: string;
+    silvercSourceFile?: string;
     mainnetProgramProfileApproved?: boolean;
     mainnetProgramProfileFingerprint?: string;
     mainnetMaxStakeKas?: KasAmount;

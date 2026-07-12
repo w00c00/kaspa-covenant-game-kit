@@ -31,6 +31,7 @@ class KaspaCovenantGameKit {
       contractName: options.contractName,
       contractFile: options.contractFile,
       contractSource: options.contractSource,
+      programProfile: this.escrow.programProfile,
       docs: options.docs
     });
     this.kascovLab =

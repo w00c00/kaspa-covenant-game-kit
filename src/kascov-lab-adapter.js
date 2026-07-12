@@ -1,27 +1,8 @@
 "use strict";
 
 const { execFile } = require("node:child_process");
-const fs = require("node:fs");
-const path = require("node:path");
-const { normalizeHex, sha256Hex } = require("./utils");
-
-function resolveExecutable(bin, env) {
-  const candidate = String(bin || "");
-  if (path.isAbsolute(candidate) || candidate.includes(path.sep)) return fs.realpathSync(candidate);
-  const searchPath = String(env?.PATH || process.env.PATH || "");
-  for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
-    const executable = path.join(directory, candidate);
-    try {
-      fs.accessSync(executable, fs.constants.X_OK);
-      return fs.realpathSync(executable);
-    } catch {
-      // Continue through PATH until an executable is found.
-    }
-  }
-  const error = new Error(`Settlement runner executable was not found: ${candidate}`);
-  error.code = "SETTLEMENT_RUNNER_NOT_FOUND";
-  throw error;
-}
+const { executableManifest } = require("./executable-manifest");
+const { normalizeHex } = require("./utils");
 
 function normalizeRunnerNetwork(value) {
   const network = String(value || "").trim().toLowerCase();
@@ -54,16 +35,7 @@ class KascovLabAdapter {
   }
 
   binaryManifest() {
-    const resolved = resolveExecutable(this.bin, this.env);
-    fs.accessSync(resolved, fs.constants.R_OK | fs.constants.X_OK);
-    const stat = fs.statSync(resolved);
-    if (!stat.isFile()) throw new Error("Settlement runner must be a regular executable file");
-    return {
-      path: resolved,
-      fileName: path.basename(resolved),
-      size: stat.size,
-      sha256: sha256Hex(fs.readFileSync(resolved))
-    };
+    return executableManifest(this.bin, this.env);
   }
 
   assertApprovedForNetwork(networkId) {

@@ -32,6 +32,8 @@ const kit = new KaspaCovenantGameKit({
   // Enable only after reviewing and pinning the generated escrow program profile.
   mainnetProgramProfileApproved: true,
   mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
+  silvercBin: process.env.SILVERC_BIN,
+  silvercExpectedSha256: process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256,
   // Closed mainnet testing defaults to at most 1 KAS per player.
   mainnetMaxStakeKas: "1",
   adapter: myGame,
@@ -45,7 +47,10 @@ Environment version:
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
+KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
 KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<reviewed-profile-fingerprint>
+SILVERC_BIN=/absolute/path/to/silverc
+KASPA_COVENANT_MAINNET_SILVERC_SHA256=<reviewed-compiler-sha256>
 ```
 
 ## Runtime Switch
@@ -114,14 +119,13 @@ Before enabling mainnet in a user-facing app:
 
 `allowMainnet` only unlocks the network configuration. Draft construction has a
 second guard, `mainnetProgramProfileApproved`, requires the exact current
-`mainnetProgramProfileFingerprint`, and the SDK applies a default
-closed-test cap of 1 KAS per player. The current vendored Kascov escrow skeleton
-is identified in every intent as `kascov-silverscript-escrow-skeleton-v1` and is
-explicitly marked `contractSourceLinked: false`; the example `.sil` source must
-not be presented as the byte-for-byte source of that program until a compiler
-pipeline and independent review are added.
+`mainnetProgramProfileFingerprint`, and the SDK enforces a hard closed-test cap
+of 1 KAS per player. Mainnet also requires a hash-pinned official `silverc`
+binary. Every instance is compiled from `contracts/escrow.sil` and compared
+byte-for-byte with the deterministic generator before a wallet draft is built.
 
-Run `node examples/program-profile.js` to print the manifest. Review and record
-the generator hashes and parameters before copying its fingerprint into a
-mainnet environment. Any vendored generator change produces a new fingerprint
-and invalidates the previous approval.
+Set `SILVERC_BIN` and `KASPA_COVENANT_MAINNET_SILVERC_SHA256`, then run
+`node examples/program-profile.js` to print the source-linked manifest. Review
+and record the compiler, source, generator hashes and parameters before copying
+its fingerprint into a mainnet environment. Any compiler, source or generator
+change invalidates the previous approval.
