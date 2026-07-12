@@ -1,0 +1,28 @@
+// Kaspa Snooker Arena escrow draft.
+// Game rules are verified by the deterministic server state machine. The
+// automated settlement verifier can only select one of the two pre-committed
+// player payout paths; it is not a human referee and cannot receive the pot.
+
+contract SnookerEscrow(
+  bytes playerOnePubKey,
+  bytes playerTwoPubKey,
+  bytes settlementVerifierPubKey,
+  int stakeSompi,
+  int expiresAtDaa
+) {
+  function claimPlayerOne(sig playerSig, bytes transcriptHash) {
+    require(checkSig(playerSig, playerOnePubKey));
+    require(verifySettlementDecision(settlementVerifierPubKey, transcriptHash, 1));
+  }
+
+  function claimPlayerTwo(sig playerSig, bytes transcriptHash) {
+    require(checkSig(playerSig, playerTwoPubKey));
+    require(verifySettlementDecision(settlementVerifierPubKey, transcriptHash, 2));
+  }
+
+  function refund(sig playerOneSig, sig playerTwoSig, int currentDaa) {
+    require(currentDaa >= expiresAtDaa);
+    require(checkSig(playerOneSig, playerOnePubKey));
+    require(checkSig(playerTwoSig, playerTwoPubKey));
+  }
+}

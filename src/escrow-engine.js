@@ -288,16 +288,16 @@ class CovenantEscrowEngine {
       })),
       kasware: {
         method: "signPskt",
-        preferredPayload: nativePskt.status === "ready" ? "nativePskt.serialized" : "unsignedTransactionSafeJson",
+        // KasWare's documented signPskt surface accepts the safe transaction
+        // JSON and a signInputs array. Keep nativePskt as diagnostic metadata,
+        // but do not send its signer envelope to the browser extension.
+        preferredPayload: "unsignedTransactionSafeJson",
         param: {
-          txJsonString: nativePskt.status === "ready" ? nativePskt.serialized : unsignedTransactionSafeJson,
+          txJsonString: unsignedTransactionSafeJson,
           options: {
-            autoFinalized: false,
-            toSignInputs: selected.map(({ player }, index) => ({
+            signInputs: selected.map((_item, index) => ({
               index,
-              address: player.address,
-              publicKey: player.publicKey,
-              sighashTypes: [1]
+              sighashType: 1
             }))
           }
         }

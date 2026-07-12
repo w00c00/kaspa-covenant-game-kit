@@ -19,6 +19,7 @@ class KascovLabAdapter {
   constructor(options = {}) {
     this.bin = options.bin || process.env.KASCOV_LAB_BIN || "kascov-lab";
     this.env = options.env || process.env;
+    this.keyFile = options.keyFile || process.env.KASCOV_LAB_KEY_FILE || "";
   }
 
   run(args, timeoutMs = 120000) {
@@ -36,8 +37,9 @@ class KascovLabAdapter {
   }
 
   async settleEscrow({ programHex, releaseTo, covenantId, timeoutMs = 120000 }) {
+    const globalArgs = this.keyFile ? ["--key", this.keyFile] : [];
     const run = await this.run(
-      ["settle-escrow", "--program-hex", programHex, "--release-to", releaseTo, "--covenant", covenantId],
+      [...globalArgs, "settle-escrow", "--program-hex", programHex, "--release-to", releaseTo, "--covenant", covenantId],
       timeoutMs
     );
     return {
