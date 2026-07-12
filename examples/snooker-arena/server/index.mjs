@@ -26,7 +26,9 @@ const host = process.env.HOST || "0.0.0.0";
 const networkId = process.env.KASPA_COVENANT_NETWORK || "tn10";
 const mainnetRequested = ["mainnet", "kaspa", "kaspa-mainnet"].includes(networkId.toLowerCase());
 const mainnetProgramProfileApproved = process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED === "true";
+const mainnetProgramProfileFingerprint = process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT || "";
 const mainnetSettlementRunnerApproved = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED === "true";
+const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256 || "";
 const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
 const faucet = new FaucetService({
   dataDir,
@@ -42,6 +44,7 @@ const kit = new KaspaCovenantGameKit({
   networkId,
   allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
   mainnetProgramProfileApproved,
+  mainnetProgramProfileFingerprint,
   mainnetMaxStakeKas,
   adapter: snookerAdapter,
   store: new JsonStore(path.join(dataDir, "ledger.json")),
@@ -53,8 +56,23 @@ const kit = new KaspaCovenantGameKit({
   contractName: "snooker_escrow.sil",
   contractFile: path.join(root, "contracts", "snooker_escrow.sil"),
   kascovLabBin,
+  kascovLabExpectedSha256: mainnetRequested ? mainnetSettlementRunnerSha256 : process.env.KASCOV_LAB_EXPECTED_SHA256,
+  kascovLabApprovedNetworks: [mainnetRequested ? "mainnet" : "tn10"],
   kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile
 });
+
+let settlementRunnerHealth = { ready: false, reason: kascovLabBin ? "not-checked" : "runner-not-configured" };
+if (kit.kascovLab) {
+  try {
+    settlementRunnerHealth = { ready: true, ...(await kit.kascovLab.healthCheck(kit.network.id)) };
+  } catch (error) {
+    settlementRunnerHealth = { ready: false, reason: error.message || String(error), code: error.code || "RUNNER_HEALTH_FAILED" };
+    if (mainnetRequested) throw error;
+    console.error("Settlement runner disabled:", settlementRunnerHealth.reason);
+    kit.kascovLab = null;
+    kit.settlements.kascovLab = null;
+  }
+}
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -655,6 +673,17 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, network: kit.network 
 
 app.get("/api/config", (_req, res) => {
   const isMainnet = kit.network.id === "mainnet";
+  const publicRunnerHealth = settlementRunnerHealth.ready
+    ? {
+        ready: true,
+        fileName: settlementRunnerHealth.fileName,
+        sha256: settlementRunnerHealth.sha256,
+        size: settlementRunnerHealth.size,
+        network: settlementRunnerHealth.network,
+        settleEscrow: settlementRunnerHealth.settleEscrow,
+        mainnetCapable: settlementRunnerHealth.mainnetCapable
+      }
+    : { ready: false, code: settlementRunnerHealth.code || "RUNNER_UNAVAILABLE", reason: settlementRunnerHealth.reason };
   res.json({
     network: {
       id: kit.network.id,
@@ -664,15 +693,18 @@ app.get("/api/config", (_req, res) => {
       addressPrefix: kit.network.addressPrefix,
       explorer: kit.network.kascovExplorerBase
     },
-    chainMode: kit.kascovLab ? "live" : "unavailable",
-    escrowReady: Boolean(kit.kascovLab) && (!isMainnet || (mainnetProgramProfileApproved && mainnetSettlementRunnerApproved)),
+    chainMode: settlementRunnerHealth.ready ? "live" : "unavailable",
+    escrowReady: settlementRunnerHealth.ready && (!isMainnet || (kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved)),
     faucetAvailable: kit.network.isTestnet,
     stakeOptions: isMainnet ? [0.01, 0.05, 0.1, Math.min(1, Number(mainnetMaxStakeKas))] : [5, 25, 50, 100],
     mainnetGuarded: true,
     mainnetReadiness: {
       mode: isMainnet ? "closed-test" : "tn10",
-      programProfileApproved: !isMainnet || mainnetProgramProfileApproved,
+      programProfileApproved: !isMainnet || kit.escrow.mainnetProgramProfileApproved,
+      programProfileFingerprint: kit.escrow.programProfile.fingerprint,
+      configuredProgramProfileFingerprint: isMainnet ? mainnetProgramProfileFingerprint : "",
       settlementRunnerApproved: !isMainnet || mainnetSettlementRunnerApproved,
+      settlementRunnerHealth: publicRunnerHealth,
       maxStakeKas: isMainnet ? Number(mainnetMaxStakeKas) : null
     }
   });

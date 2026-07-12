@@ -5,6 +5,7 @@ const utils = require("./utils");
 const transcript = require("./transcript");
 const adapter = require("./adapter");
 const network = require("./network");
+const mainnetReadiness = require("./mainnet-readiness");
 const { CovenantEscrowEngine } = require("./escrow-engine");
 const { JsonStore } = require("./json-store");
 const { KascovLabAdapter, parseKascovLabDeploy, parseKascovLabSettle } = require("./kascov-lab-adapter");
@@ -20,6 +21,7 @@ module.exports = {
   ...transcript,
   ...adapter,
   ...network,
+  ...mainnetReadiness,
   KaspaCovenantGameKit,
   CovenantEscrowEngine,
   JsonStore,

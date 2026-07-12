@@ -486,8 +486,11 @@ function updateWaitingRoom(room) {
   const local = room.players.find((item) => item.seat === model.liveSeat);
   $("#practice-match").hidden = !local || room.players.length !== 1;
   $("#practice-match").disabled = !local || room.players.length !== 1 || local.lockStatus !== "unsigned";
-  $("#lock-stake").disabled = !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
-  $("#lock-stake").textContent = local?.locked
+  const escrowUnavailable = model.config.escrowReady === false;
+  $("#lock-stake").disabled = escrowUnavailable || !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
+  $("#lock-stake").textContent = escrowUnavailable
+    ? tr("链上安全配置未就绪", "On-chain safety configuration incomplete")
+    : local?.locked
     ? tr("锁仓交易已上链", "Escrow confirmed on-chain")
     : local?.lockStatus === "signed"
       ? (room.escrow?.status === "confirming-lock-on-chain" ? tr("交易已广播 · 等待确认", "Broadcast · Waiting for confirmation") : tr("已签名 · 等待对手", "Signed · Waiting for opponent"))
@@ -1047,6 +1050,9 @@ async function loadConfig() {
     }
     $(".faucet-panel").hidden = !model.config.faucetAvailable;
     if (model.config.faucetAvailable) await loadFaucet();
+    if (!network.isTestnet && !model.config.escrowReady) {
+      showMessage(tr("主网安全配置未通过，已禁止锁仓", "Mainnet safety checks failed; escrow is disabled"), "foul");
+    }
   } catch {
     showMessage(tr("结算服务暂未连接，游戏仍可离线试玩", "Settlement service is offline; local practice remains available"), "foul");
   }

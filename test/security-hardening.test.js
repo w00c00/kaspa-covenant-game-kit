@@ -11,13 +11,16 @@ const {
   DEFAULT_NETWORKS,
   JsonStore,
   KaspaCovenantGameKit,
+  KascovLabAdapter,
   KascovTools,
   ProofBuilder,
   SettlementEngine,
   TRANSCRIPT_VERSION,
+  assessMainnetReadiness,
   kasToSompi,
   parseKascovLabSettle,
-  resolveNetworkConfig
+  resolveNetworkConfig,
+  sha256Hex
 } = require("../src");
 
 function fundedPlayer(transactionByte, networkId = "testnet-10") {
@@ -85,6 +88,115 @@ test("Kascov settlement output parses both TN10 and mainnet currency labels", ()
   assert.equal(parseKascovLabSettle(`tx ${txid}\n(0.5 KAS released)`).releasedKas, 0.5);
 });
 
+test("the vendored escrow generator exposes a reproducible program profile fingerprint", () => {
+  const tools = new KascovTools();
+  const profile = tools.escrowProgramProfile();
+  assert.match(profile.fingerprint, /^[0-9a-f]{64}$/);
+  assert.match(profile.generatorSha256, /^[0-9a-f]{64}$/);
+  assert.equal(profile.contractSourceLinked, false);
+  assert.equal(profile.emitVerified, true);
+  assert.deepEqual(tools.verifyEscrowProgramProfile(profile.fingerprint), profile);
+  assert.throws(() => tools.verifyEscrowProgramProfile("00".repeat(32)), (error) =>
+    error.code === "PROGRAM_PROFILE_MISMATCH" && error.actualFingerprint === profile.fingerprint
+  );
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-profile-"));
+  try {
+    const disasmFile = path.join(directory, "kascov-disasm.js");
+    const blake2bFile = path.join(directory, "kascov-blake2b.js");
+    fs.copyFileSync(path.join(__dirname, "..", "vendor", "kascov-disasm.js"), disasmFile);
+    fs.copyFileSync(path.join(__dirname, "..", "vendor", "kascov-blake2b.js"), blake2bFile);
+    fs.appendFileSync(disasmFile, "\n// fingerprint mutation test\n");
+    const changed = new KascovTools({ disasmFile, blake2bFile }).escrowProgramProfile();
+    assert.notEqual(changed.fingerprint, profile.fingerprint);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("mainnet settlement runner requires an approved network, pinned binary and capability probe", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-runner-"));
+  const runner = path.join(directory, "settlement-runner");
+  try {
+    fs.writeFileSync(runner, "#!/bin/sh\necho 'mainnet settle-escrow runner'\n", { mode: 0o700 });
+    const expectedBinSha256 = sha256Hex(fs.readFileSync(runner));
+    const adapter = new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256,
+      approvedNetworks: ["mainnet"]
+    });
+    const health = await adapter.healthCheck("mainnet");
+    assert.equal(health.sha256, expectedBinSha256);
+    assert.equal(health.mainnetCapable, true);
+    assert.throws(() => new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256: "00".repeat(32),
+      approvedNetworks: ["mainnet"]
+    }).assertApprovedForNetwork("mainnet"), (error) => error.code === "SETTLEMENT_RUNNER_HASH_MISMATCH");
+    assert.throws(() => new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256,
+      approvedNetworks: ["tn10"]
+    }).assertApprovedForNetwork("mainnet"), (error) => error.code === "SETTLEMENT_RUNNER_NETWORK_NOT_APPROVED");
+    assert.throws(() => new KascovLabAdapter({
+      bin: runner,
+      approvedNetworks: ["tn10"]
+    }).assertApprovedForNetwork("testnet-11"), (error) => error.code === "SETTLEMENT_RUNNER_NETWORK_NOT_APPROVED");
+    fs.writeFileSync(runner, "#!/bin/sh\necho 'settle-escrow testnet-10 only'\n", { mode: 0o700 });
+    await assert.rejects(() => adapter.settleEscrow({
+      programHex: "00",
+      releaseTo: "buyer",
+      covenantId: "11".repeat(32)
+    }), (error) => error.code === "SETTLEMENT_RUNNER_HASH_MISMATCH");
+    const tn10Only = new KascovLabAdapter({
+      bin: runner,
+      expectedBinSha256: sha256Hex(fs.readFileSync(runner)),
+      approvedNetworks: ["mainnet"]
+    });
+    await assert.rejects(() => tn10Only.healthCheck("mainnet"), (error) =>
+      error.code === "SETTLEMENT_RUNNER_MAINNET_CAPABILITY_MISSING"
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("mainnet preflight reports every blocker and becomes ready only with all closed-test gates", async () => {
+  const missing = await assessMainnetReadiness({ env: {} });
+  assert.equal(missing.ready, false);
+  assert.ok(missing.blockers.length >= 5);
+  const stringBooleans = await assessMainnetReadiness({
+    env: {},
+    allowMainnet: "false",
+    programProfileApproved: "false",
+    runnerApproved: "false"
+  });
+  assert.equal(stringBooleans.checks.find((check) => check.id === "network-approved").ok, false);
+  assert.equal(stringBooleans.checks.find((check) => check.id === "program-approved").ok, false);
+  assert.equal(stringBooleans.checks.find((check) => check.id === "runner-approved").ok, false);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-preflight-"));
+  const runnerPath = path.join(directory, "mainnet-runner");
+  try {
+    fs.writeFileSync(runnerPath, "#!/bin/sh\necho 'mainnet settle-escrow runner'\n", { mode: 0o700 });
+    const tools = new KascovTools();
+    const report = await assessMainnetReadiness({
+      env: {},
+      allowMainnet: true,
+      programProfileApproved: true,
+      programProfileFingerprint: tools.escrowProgramProfile().fingerprint,
+      maxStakeKas: "0.1",
+      runnerApproved: true,
+      runnerBin: runnerPath,
+      runnerSha256: sha256Hex(fs.readFileSync(runnerPath)),
+      kascovTools: tools
+    });
+    assert.equal(report.ready, true);
+    assert.deepEqual(report.blockers, []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("transcript hashes are versioned and stable across object key ordering", () => {
   const { canonicalTranscript, transcriptHash } = require("../src");
   const match = {
@@ -117,15 +229,18 @@ test("custom configurations that point at mainnet still require explicit approva
     }
   }), /Mainnet is disabled/);
   assert.throws(() => new CovenantEscrowEngine({ network: DEFAULT_NETWORKS.mainnet }), /Mainnet is disabled/);
+  assert.throws(() => resolveNetworkConfig({ network: DEFAULT_NETWORKS.mainnet, allowMainnet: "false" }), /Mainnet is disabled/);
 });
 
 test("mainnet test mode enforces a small per-player stake cap by default", async () => {
   const first = fundedPlayer("c", "mainnet");
   const second = fundedPlayer("d", "mainnet");
+  const programProfileFingerprint = new KascovTools().escrowProgramProfile().fingerprint;
   const engine = new CovenantEscrowEngine({
     network: DEFAULT_NETWORKS.mainnet,
     allowMainnet: true,
     mainnetProgramProfileApproved: true,
+    mainnetProgramProfileFingerprint: programProfileFingerprint,
     arbiter: { arbiterHash: new KascovTools().blake2b256Hex("44".repeat(32)) },
     fetchUtxos: async () => []
   });
@@ -141,6 +256,16 @@ test("mainnet test mode enforces a small per-player stake cap by default", async
       publicKey: player.keypair.xOnlyPublicKey
     }))
   }), /safety cap/);
+  assert.throws(() => new CovenantEscrowEngine({
+    network: DEFAULT_NETWORKS.mainnet,
+    allowMainnet: true,
+    mainnetMaxStakeKas: "1.00000001"
+  }), (error) => error.code === "MAINNET_STAKE_CAP_INVALID");
+  assert.throws(() => new CovenantEscrowEngine({
+    network: DEFAULT_NETWORKS.mainnet,
+    allowMainnet: true,
+    maxStakeSompi: 100_000_001n
+  }), (error) => error.code === "MAINNET_STAKE_CAP_INVALID");
 });
 
 test("mainnet draft building requires a separately approved covenant program profile", async () => {
@@ -163,7 +288,32 @@ test("mainnet draft building requires a separately approved covenant program pro
       address: player.address,
       publicKey: player.keypair.xOnlyPublicKey
     }))
-  }), /program profile is not approved/);
+  }), /profile approval or fingerprint is missing or mismatched/);
+});
+
+test("mainnet rejects an approval for a different program profile fingerprint", async () => {
+  const first = fundedPlayer("1", "mainnet");
+  const second = fundedPlayer("2", "mainnet");
+  const engine = new CovenantEscrowEngine({
+    network: DEFAULT_NETWORKS.mainnet,
+    allowMainnet: true,
+    mainnetProgramProfileApproved: true,
+    mainnetProgramProfileFingerprint: "00".repeat(32),
+    arbiter: { arbiterHash: new KascovTools().blake2b256Hex("66".repeat(32)) },
+    fetchUtxos: async () => []
+  });
+  await assert.rejects(() => engine.buildPlayerFundedDeployDraft({
+    id: "MAINNET-PROFILE-MISMATCH",
+    roundId: "ROUND-1",
+    game: "duel",
+    stakeKas: "0.1",
+    players: [first, second].map((player, seat) => ({
+      seat,
+      role: `player-${seat + 1}`,
+      address: player.address,
+      publicKey: player.keypair.xOnlyPublicKey
+    }))
+  }), (error) => error.code === "MAINNET_PROGRAM_PROFILE_NOT_APPROVED" && error.actualFingerprint !== error.expectedFingerprint);
 });
 
 test("an unknown winner can never fall back to either payout path", async () => {

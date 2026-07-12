@@ -59,6 +59,8 @@ test("settlement engine maps winner to buyer or seller release path", () => {
     matchId: match.id,
     roundId: match.roundId,
     programHex: "00",
+    programHash: "55".repeat(32),
+    programProfile: { fingerprint: "66".repeat(32) },
     status: "deployed-player-funded-on-chain",
     buyer: match.players[0],
     seller: match.players[1],
@@ -74,4 +76,6 @@ test("settlement engine maps winner to buyer or seller release path", () => {
   assert.equal(pending.status, "pending-chain-covenant-settlement");
   assert.equal(pending.releaseTo, "seller");
   assert.equal(pending.potKas, 10);
+  assert.equal(pending.covenantProof.programHash, "55".repeat(32));
+  assert.equal(pending.covenantProof.programProfileFingerprint, "66".repeat(32));
 });

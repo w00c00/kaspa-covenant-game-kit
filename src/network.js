@@ -18,7 +18,7 @@ function normalizeNetworkId(value) {
 }
 
 function mainnetAllowed(options = {}) {
-  return Boolean(options.allowMainnet) || truthy(process.env[ENV_ALLOW_MAINNET_KEY]);
+  return options.allowMainnet === true || truthy(process.env[ENV_ALLOW_MAINNET_KEY]);
 }
 
 function networkIdFrom(options = {}) {

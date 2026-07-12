@@ -10,7 +10,10 @@ const kit = new KaspaCovenantGameKit({
   networkId: process.env.KASPA_COVENANT_NETWORK || "tn10",
   allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
   mainnetProgramProfileApproved: process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED === "true",
+  mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
   mainnetMaxStakeKas: process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1",
+  kascovLabExpectedSha256: process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256,
+  kascovLabApprovedNetworks: ["mainnet"],
   adapter: myGame,
   arbiter: {
     address: process.env.ARBITER_ADDRESS,
@@ -26,9 +29,14 @@ Use `KASPA_COVENANT_NETWORK=tn10` for testnet. Use
 
 Mainnet draft construction also requires
 `KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true` to be passed into
-`mainnetProgramProfileApproved`. Keep the default 1 KAS per-player cap for
-closed testing. This second switch must only be enabled for a reviewed and
-pinned program profile.
+`mainnetProgramProfileApproved`, together with the exact fingerprint printed by
+`node examples/program-profile.js`. Keep the default 1 KAS per-player cap for
+closed testing. A boolean approval without the matching fingerprint is rejected.
+
+A mainnet settlement runner must also be allowlisted for `mainnet`, pinned by
+its executable SHA-256, and pass the SDK's read-only `--help` capability probe.
+The bundled snooker runner currently identifies itself as testnet-10 only and
+is rejected for mainnet even if copied into a mainnet deployment.
 
 ## 2. Build A Match
 

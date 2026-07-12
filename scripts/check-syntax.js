@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const roots = ["src", "examples", "test"];
+const roots = ["src", "examples", "test", "scripts"];
 const ignored = new Set(["node_modules", "dist", ".git"]);
 const extensions = new Set([".js", ".cjs", ".mjs"]);
 const files = [];

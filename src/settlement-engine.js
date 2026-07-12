@@ -23,6 +23,8 @@ class SettlementEngine {
     const hasChainEscrow = this.escrowEngine.isEscrowDeployed(escrowRecord);
     const stakeKas = Number(match.stakeKas || 0);
     const covenantProof = this.proofBuilder.covenantPlan(match, winnerAddress, gameState);
+    covenantProof.programHash = escrowRecord?.programHash || "";
+    covenantProof.programProfileFingerprint = escrowRecord?.programProfile?.fingerprint || "";
     const settlement = {
       id: randomId(`GAME-${match.id || "MATCH"}`),
       matchId: match.id,

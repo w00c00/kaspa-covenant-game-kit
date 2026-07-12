@@ -31,6 +31,7 @@ const kit = new KaspaCovenantGameKit({
   allowMainnet: true,
   // Enable only after reviewing and pinning the generated escrow program profile.
   mainnetProgramProfileApproved: true,
+  mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
   // Closed mainnet testing defaults to at most 1 KAS per player.
   mainnetMaxStakeKas: "1",
   adapter: myGame,
@@ -44,6 +45,7 @@ Environment version:
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
+KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<reviewed-profile-fingerprint>
 ```
 
 ## Runtime Switch
@@ -111,9 +113,15 @@ Before enabling mainnet in a user-facing app:
 - run independent review for contract bytecode and settlement behavior.
 
 `allowMainnet` only unlocks the network configuration. Draft construction has a
-second guard, `mainnetProgramProfileApproved`, and the SDK applies a default
+second guard, `mainnetProgramProfileApproved`, requires the exact current
+`mainnetProgramProfileFingerprint`, and the SDK applies a default
 closed-test cap of 1 KAS per player. The current vendored Kascov escrow skeleton
 is identified in every intent as `kascov-silverscript-escrow-skeleton-v1` and is
 explicitly marked `contractSourceLinked: false`; the example `.sil` source must
 not be presented as the byte-for-byte source of that program until a compiler
 pipeline and independent review are added.
+
+Run `node examples/program-profile.js` to print the manifest. Review and record
+the generator hashes and parameters before copying its fingerprint into a
+mainnet environment. Any vendored generator change produces a new fingerprint
+and invalidates the previous approval.

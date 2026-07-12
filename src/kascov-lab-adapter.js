@@ -1,6 +1,34 @@
 "use strict";
 
 const { execFile } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const { normalizeHex, sha256Hex } = require("./utils");
+
+function resolveExecutable(bin, env) {
+  const candidate = String(bin || "");
+  if (path.isAbsolute(candidate) || candidate.includes(path.sep)) return fs.realpathSync(candidate);
+  const searchPath = String(env?.PATH || process.env.PATH || "");
+  for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
+    const executable = path.join(directory, candidate);
+    try {
+      fs.accessSync(executable, fs.constants.X_OK);
+      return fs.realpathSync(executable);
+    } catch {
+      // Continue through PATH until an executable is found.
+    }
+  }
+  const error = new Error(`Settlement runner executable was not found: ${candidate}`);
+  error.code = "SETTLEMENT_RUNNER_NOT_FOUND";
+  throw error;
+}
+
+function normalizeRunnerNetwork(value) {
+  const network = String(value || "").trim().toLowerCase();
+  if (["testnet-10", "testnet10"].includes(network)) return "tn10";
+  if (["kaspa", "kaspa-mainnet"].includes(network)) return "mainnet";
+  return network;
+}
 
 function parseKascovLabDeploy(stdout) {
   const covenantId = stdout.match(/BIRTH\s+covenant\s+([0-9a-f]{64})/i)?.[1] || "";
@@ -20,11 +48,60 @@ class KascovLabAdapter {
     this.bin = options.bin || process.env.KASCOV_LAB_BIN || "kascov-lab";
     this.env = options.env || process.env;
     this.keyFile = options.keyFile || process.env.KASCOV_LAB_KEY_FILE || "";
+    this.expectedBinSha256 = normalizeHex(options.expectedBinSha256 || process.env.KASCOV_LAB_EXPECTED_SHA256 || "");
+    this.approvedNetworks = new Set((options.approvedNetworks || ["tn10"]).map(normalizeRunnerNetwork));
+    this.approvedNetwork = "";
+  }
+
+  binaryManifest() {
+    const resolved = resolveExecutable(this.bin, this.env);
+    fs.accessSync(resolved, fs.constants.R_OK | fs.constants.X_OK);
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error("Settlement runner must be a regular executable file");
+    return {
+      path: resolved,
+      fileName: path.basename(resolved),
+      size: stat.size,
+      sha256: sha256Hex(fs.readFileSync(resolved))
+    };
+  }
+
+  assertApprovedForNetwork(networkId) {
+    const network = normalizeRunnerNetwork(networkId);
+    const manifest = this.binaryManifest();
+    if (!this.approvedNetworks.has(network)) {
+      const error = new Error(`Settlement runner is not approved for ${network}`);
+      error.code = "SETTLEMENT_RUNNER_NETWORK_NOT_APPROVED";
+      throw error;
+    }
+    if (network === "mainnet" && !this.expectedBinSha256) {
+      const error = new Error("Mainnet settlement runner requires a pinned executable SHA-256");
+      error.code = "SETTLEMENT_RUNNER_HASH_REQUIRED";
+      throw error;
+    }
+    if (this.expectedBinSha256 && this.expectedBinSha256 !== manifest.sha256) {
+      const error = new Error("Settlement runner executable hash does not match the approved SHA-256");
+      error.code = "SETTLEMENT_RUNNER_HASH_MISMATCH";
+      error.expectedSha256 = this.expectedBinSha256;
+      error.actualSha256 = manifest.sha256;
+      throw error;
+    }
+    this.approvedNetwork = network;
+    return { ...manifest, network, approved: true };
   }
 
   run(args, timeoutMs = 120000) {
+    if (!this.approvedNetwork) {
+      if (this.approvedNetworks.size !== 1) {
+        const error = new Error("Settlement runner network must be selected before execution");
+        error.code = "SETTLEMENT_RUNNER_NETWORK_NOT_SELECTED";
+        throw error;
+      }
+      this.approvedNetwork = this.approvedNetworks.values().next().value;
+    }
+    const manifest = this.assertApprovedForNetwork(this.approvedNetwork);
     return new Promise((resolve, reject) => {
-      execFile(this.bin, args, { timeout: timeoutMs, env: this.env }, (error, stdout, stderr) => {
+      execFile(manifest.path, args, { timeout: timeoutMs, env: this.env }, (error, stdout, stderr) => {
         if (error) {
           error.stdout = stdout;
           error.stderr = stderr;
@@ -47,6 +124,20 @@ class KascovLabAdapter {
       stdout: run.stdout,
       stderr: run.stderr
     };
+  }
+
+  async healthCheck(networkId, timeoutMs = 10_000) {
+    const manifest = this.assertApprovedForNetwork(networkId);
+    const run = await this.run(["--help"], timeoutMs);
+    const help = `${run.stdout || ""}\n${run.stderr || ""}`;
+    if (!/settle-escrow/i.test(help)) throw new Error("Settlement runner does not expose settle-escrow capability");
+    if (manifest.network === "mainnet" &&
+        (!/mainnet/i.test(help) || /testnet-10\s+only/i.test(help) || /mainnet.{0,24}(?:unsupported|disabled|not supported)/i.test(help))) {
+      const error = new Error("Settlement runner help does not prove mainnet capability");
+      error.code = "SETTLEMENT_RUNNER_MAINNET_CAPABILITY_MISSING";
+      throw error;
+    }
+    return { ...manifest, settleEscrow: true, mainnetCapable: manifest.network === "mainnet" };
   }
 }
 

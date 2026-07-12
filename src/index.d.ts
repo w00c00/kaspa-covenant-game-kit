@@ -44,6 +44,20 @@ export interface GameAdapter<State = any, Room = any, Move = any> {
   getWinnerAddress?: (match: Match, state: State) => string;
 }
 
+export interface CovenantProgramProfile {
+  id: string;
+  version: number;
+  skeletonName: string;
+  generator: string;
+  generatorSha256: string;
+  blake2bSha256: string;
+  parameters: Array<{ name: string; kind: string; source: string }>;
+  emitVerified: boolean;
+  contractSourceLinked: boolean;
+  fingerprint: string;
+  mainnetApproved?: boolean;
+}
+
 export interface EscrowIntent {
   id: string;
   matchId: string;
@@ -58,12 +72,7 @@ export interface EscrowIntent {
   totalLockedSompi: string;
   programHex: string;
   programHash: string;
-  programProfile?: {
-    id: string;
-    generator: string;
-    contractSourceLinked: boolean;
-    mainnetApproved: boolean;
-  };
+  programProfile?: CovenantProgramProfile;
   buyer?: Player;
   seller?: Player;
 }
@@ -153,9 +162,52 @@ export declare class SettlementEngine {
 }
 
 export declare class KascovLabAdapter {
-  constructor(options?: { bin?: string; env?: Record<string, string>; keyFile?: string });
+  constructor(options?: {
+    bin?: string;
+    env?: Record<string, string>;
+    keyFile?: string;
+    expectedBinSha256?: string;
+    approvedNetworks?: string[];
+  });
+  binaryManifest(): { path: string; fileName: string; size: number; sha256: string };
+  assertApprovedForNetwork(networkId: string): { path: string; fileName: string; size: number; sha256: string; network: string; approved: true };
+  healthCheck(networkId: string, timeoutMs?: number): Promise<unknown>;
   settleEscrow(input: { programHex: string; releaseTo: "buyer" | "seller"; covenantId: string; timeoutMs?: number }): Promise<unknown>;
 }
+
+export declare const ESCROW_PROFILE_ID: "kascov-silverscript-escrow-skeleton-v1";
+export declare const ESCROW_SKELETON_NAME: "SilverScript · Escrow";
+export declare class KascovTools {
+  constructor(options?: { blake2bFile?: string; disasmFile?: string });
+  blake2b256Hex(hex: string): string;
+  escrowProgramProfile(): CovenantProgramProfile;
+  verifyEscrowProgramProfile(expectedFingerprint: string): CovenantProgramProfile;
+  emitEscrowProgramHex(input: { arbiterHash: string; buyerPublicKey: string; sellerPublicKey: string }): string;
+}
+
+export interface MainnetReadinessReport {
+  mode: "mainnet-closed-test";
+  ready: boolean;
+  profile: CovenantProgramProfile;
+  configuredFingerprint: string;
+  maxStakeKas: number | null;
+  runner: unknown;
+  checks: Array<{ id: string; ok: boolean; detail: string }>;
+  blockers: Array<{ id: string; ok: false; detail: string }>;
+}
+export declare function assessMainnetReadiness(options?: {
+  env?: Record<string, string | undefined>;
+  allowMainnet?: boolean;
+  programProfileApproved?: boolean;
+  programProfileFingerprint?: string;
+  maxStakeKas?: KasAmount;
+  runnerApproved?: boolean;
+  runner?: KascovLabAdapter;
+  runnerBin?: string;
+  runnerKeyFile?: string;
+  runnerSha256?: string;
+  kascovTools?: KascovTools;
+}): Promise<MainnetReadinessReport>;
 
 export declare class KaspaCovenantGameKit {
   constructor(options?: {
@@ -176,7 +228,10 @@ export declare class KaspaCovenantGameKit {
     contractSource?: string;
     kascovLab?: KascovLabAdapter | null;
     kascovLabBin?: string;
+    kascovLabExpectedSha256?: string;
+    kascovLabApprovedNetworks?: string[];
     mainnetProgramProfileApproved?: boolean;
+    mainnetProgramProfileFingerprint?: string;
     mainnetMaxStakeKas?: KasAmount;
     maxStakeSompi?: string | number | bigint;
     [key: string]: unknown;

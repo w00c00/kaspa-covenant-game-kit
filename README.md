@@ -8,7 +8,8 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 
 > Mainnet safety: `allowMainnet` only enables the network preset. Building a
 > mainnet funding draft additionally requires `mainnetProgramProfileApproved`
-> and is capped at 1 KAS per player by default. This is for closed testing, not
+> plus the exact reviewed profile fingerprint. Closed-test builds enforce a hard
+> maximum of 1 KAS per player. This is for closed testing, not
 > a claim that the covenant program has completed an independent audit.
 
 ## What This SDK Does
@@ -82,6 +83,7 @@ Mainnet, same API, explicit confirmation:
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
 KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
+KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<64-char-reviewed-profile-fingerprint>
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
@@ -94,6 +96,7 @@ const mainnetKit = new KaspaCovenantGameKit({
   networkId: "mainnet",
   allowMainnet: true,
   mainnetProgramProfileApproved: true,
+  mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
   mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
@@ -107,6 +110,24 @@ REST / wRPC targets, explorer links, and display symbol.
 More detail: [docs/network-switch.md](docs/network-switch.md)
 
 Mainnet security gates: [docs/mainnet-readiness.md](docs/mainnet-readiness.md)
+
+After configuring the reviewed program and runner, execute the read-only gate:
+
+```bash
+npm run mainnet:preflight
+```
+
+Print the exact vendored generator manifest and fingerprint that must be
+reviewed and pinned before a mainnet draft can be built:
+
+```bash
+node examples/program-profile.js
+```
+
+Mainnet settlement runners are independently guarded: the executable SHA-256
+must be pinned, `mainnet` must be in its approved-network list, and a read-only
+startup probe must confirm that the runner advertises mainnet `settle-escrow`
+support. The bundled snooker `kascov-lab` currently advertises testnet-10 only.
 
 ## Adapter Contract
 

@@ -38,8 +38,18 @@ class KaspaCovenantGameKit {
       (options.kascovLabBin ? new KascovLabAdapter({
         bin: options.kascovLabBin,
         env: options.kascovLabEnv,
-        keyFile: options.kascovLabKeyFile
+        keyFile: options.kascovLabKeyFile,
+        expectedBinSha256: options.kascovLabExpectedSha256,
+        approvedNetworks: options.kascovLabApprovedNetworks || [this.network.id]
       }) : null);
+    this.settlementRunnerManifest = null;
+    if (this.kascovLab) {
+      if (typeof this.kascovLab.assertApprovedForNetwork === "function") {
+        this.settlementRunnerManifest = this.kascovLab.assertApprovedForNetwork(this.network.id);
+      } else if (this.network.id === "mainnet") {
+        throw new Error("Mainnet settlement runner must implement assertApprovedForNetwork(networkId)");
+      }
+    }
     this.settlements = options.settlementEngine || new SettlementEngine({
       escrowEngine: this.escrow,
       proofBuilder: this.proofs,
@@ -90,6 +100,7 @@ class KaspaCovenantGameKit {
       covenantId: draft.covenantId,
       programHex: draft.programHex,
       programHash: draft.programHash,
+      programProfile: draft.intent.programProfile,
       stakeKas: draft.intent.stakeKas,
       totalLockedKas: draft.intent.totalLockedKas,
       buyer: draft.intent.buyer,

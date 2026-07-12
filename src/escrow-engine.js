@@ -8,6 +8,7 @@ const {
   explorerTxUrl,
   hasPublicKey,
   kasToSompi,
+  normalizeHex,
   normalizeXOnlyPublicKey,
   safeJson,
   shortAddress,
@@ -16,6 +17,7 @@ const {
 
 const DEFAULT_COMPUTE_BUDGET = 120;
 const DEFAULT_FEE_SHARE_SOMPI = 1_500_000n;
+const MAINNET_CLOSED_TEST_MAX_STAKE_SOMPI = 100_000_000n;
 
 function loadKaspa(provided) {
   return provided || require("@kluster/kaspa-wasm");
@@ -96,6 +98,7 @@ class CovenantEscrowEngine {
       network: options.network || DEFAULT_NETWORKS[options.networkId || "tn10"]
     });
     this.kascovTools = options.kascovTools || new KascovTools(options.kascovToolsOptions || {});
+    this.programProfile = this.kascovTools.escrowProgramProfile();
     this.arbiter = options.arbiter || {};
     this.computeBudget = Number(options.computeBudget || DEFAULT_COMPUTE_BUDGET);
     this.feeShareSompi = BigInt(options.feeShareSompi || DEFAULT_FEE_SHARE_SOMPI);
@@ -104,8 +107,19 @@ class CovenantEscrowEngine {
       : this.network.id === "mainnet"
         ? kasToSompi(options.mainnetMaxStakeKas || process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1")
         : null;
-    this.mainnetProgramProfileApproved = Boolean(options.mainnetProgramProfileApproved) ||
+    if (this.network.id === "mainnet" &&
+        (this.maxStakeSompi <= 0n || this.maxStakeSompi > MAINNET_CLOSED_TEST_MAX_STAKE_SOMPI)) {
+      const error = new RangeError("Closed mainnet testing requires a maximum stake between 1 sompi and 1 KAS per player");
+      error.code = "MAINNET_STAKE_CAP_INVALID";
+      throw error;
+    }
+    const programProfileApproval = options.mainnetProgramProfileApproved === true ||
       ["1", "true", "yes", "on"].includes(String(process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED || "").toLowerCase());
+    this.mainnetProgramProfileFingerprint = normalizeHex(
+      options.mainnetProgramProfileFingerprint || process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT || ""
+    );
+    this.mainnetProgramProfileApproved = programProfileApproval &&
+      this.mainnetProgramProfileFingerprint === this.programProfile.fingerprint;
     this.fetchUtxos = options.fetchUtxos || this.fetchSpendableUtxos.bind(this);
     this.submitTransaction = options.submitTransaction || this.submitSignedTransactionWrpc.bind(this);
   }
@@ -180,12 +194,7 @@ class CovenantEscrowEngine {
       seller,
       programHex,
       programHash,
-      programProfile: {
-        id: "kascov-silverscript-escrow-skeleton-v1",
-        generator: "vendored-kascov-disasm-skeleton",
-        contractSourceLinked: false,
-        mainnetApproved: this.mainnetProgramProfileApproved
-      },
+      programProfile: { ...this.programProfile, mainnetApproved: this.mainnetProgramProfileApproved },
       missingPublicKeys: missing.map((player) => player.address),
       deployCommand: programHex && stakeSompi > 0n ? `kascov-lab deploy --program-hex ${programHex} --value ${stakeSompi * BigInt(players.length)}` : "",
       settleWinnerCommand: programHex ? `kascov-lab settle-escrow --program-hex ${programHex} --release-to <buyer|seller>` : ""
@@ -291,7 +300,11 @@ class CovenantEscrowEngine {
 
     const stakeSompi = BigInt(intent.stakeSompi);
     if (this.network.id === "mainnet" && !this.mainnetProgramProfileApproved) {
-      throw new Error("Mainnet covenant program profile is not approved for testing");
+      const error = new Error("Mainnet covenant program profile approval or fingerprint is missing or mismatched");
+      error.code = "MAINNET_PROGRAM_PROFILE_NOT_APPROVED";
+      error.actualFingerprint = this.programProfile.fingerprint;
+      error.expectedFingerprint = this.mainnetProgramProfileFingerprint;
+      throw error;
     }
     if (this.maxStakeSompi && stakeSompi > this.maxStakeSompi) {
       throw new Error(`Mainnet test stake exceeds the configured safety cap of ${sompiToKas(this.maxStakeSompi)} KAS per player`);
@@ -349,6 +362,7 @@ class CovenantEscrowEngine {
       covenantId,
       programHex: intent.programHex,
       programHash: intent.programHash,
+      programProfile: intent.programProfile,
       unsignedTransactionSafeJson,
       unsignedTransaction: safe,
       nativePskt,

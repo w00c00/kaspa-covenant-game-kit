@@ -3,11 +3,26 @@
 The target is a capped, closed-test product first, followed by audited
 production use. Network selection alone is never evidence of readiness.
 
+Run the non-mutating preflight before starting a mainnet service:
+
+```bash
+npm run mainnet:preflight
+```
+
+It exits non-zero and prints every blocker until network approval, the exact
+program fingerprint, a stake cap of at most 1 KAS, runner approval, executable
+hash pinning and the mainnet capability probe all pass. It does not construct or
+broadcast a transaction and does not read the settlement private key.
+
 ## Implemented closed-test guards
 
 - explicit `allowMainnet` network approval;
 - separate `mainnetProgramProfileApproved` program approval;
-- default 1 KAS maximum stake per player;
+- exact pinned program-profile fingerprint covering the generator, hash helper
+  and parameter schema;
+- SDK-enforced closed-test maximum of 1 KAS per player;
+- settlement runner network allowlist, executable SHA-256 pin and non-mutating
+  `--help` capability probe at service startup;
 - wallet address/public-key ownership verification;
 - signed transaction commitment comparison before signature merge and broadcast;
 - exact winner-to-participant payout mapping with no fallback recipient;
