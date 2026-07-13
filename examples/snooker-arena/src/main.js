@@ -24,10 +24,10 @@ localStorage.setItem("kaspa-snooker-player-id", playerId);
 sessionStorage.removeItem("kaspa-snooker-player-id");
 const demoKeys = ["44".repeat(32), "55".repeat(32)];
 const model = {
-  stakeKas: 25,
-  config: { network: { id: "tn10", label: "Kaspa Testnet 10", symbol: "TKAS", addressPrefix: "kaspatest", isTestnet: true }, chainMode: "preview" },
+  stakeKas: 0.1,
+  config: { network: { id: "mainnet", label: "Kaspa Mainnet", symbol: "KAS", addressPrefix: "kaspa", isTestnet: false }, chainMode: "preview", stakeOptions: [0.05, 0.1], loaded: false },
   wallet: null,
-  opponent: { name: "W0C00", address: "kaspatest:qz8m...7n3r", publicKey: demoKeys[1] },
+  opponent: { name: "W0C00", address: "kaspa:qz8m...7n3r", publicKey: demoKeys[1] },
   chain: { intent: null, proof: null },
   muted: false,
   shotSeconds: 30,
@@ -44,8 +44,8 @@ const model = {
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
-const currencySymbol = () => model.config?.network?.symbol || "TKAS";
-const networkShortName = () => String(model.config?.network?.id || "tn10").toUpperCase();
+const currencySymbol = () => model.config?.network?.symbol || "KAS";
+const networkShortName = () => String(model.config?.network?.id || "mainnet").toUpperCase();
 const chainModeLabel = () => model.config.chainMode === "live"
   ? `${networkShortName()} LIVE`
   : model.config.chainMode === "needs-funding"
@@ -66,7 +66,7 @@ document.querySelector("#app").innerHTML = `
       </div>
       <button class="room-chip" id="copy-room" aria-label="复制房间号" hidden>私人房 ${icon("copy")}</button>
       <div class="topbar-spacer"></div>
-      <div class="network-pill"><i class="network-dot"></i><span id="network-name">TN10 · TESTNET</span></div>
+      <div class="network-pill"><i class="network-dot"></i><span id="network-name">MAINNET · LIVE</span></div>
       <button class="language-button" id="language-toggle" aria-label="中英文切换">EN</button>
       <button class="icon-button" id="settings" aria-label="游戏设置">${icon("settings")}</button>
       <button class="wallet-button" id="wallet">连接钱包</button>
@@ -74,11 +74,11 @@ document.querySelector("#app").innerHTML = `
 
     <main class="lobby-screen" id="lobby-screen">
       <section class="lobby-hero">
-        <div class="lobby-kicker"><i class="network-dot"></i> KASPA TN10 · AUTOMATIC SETTLEMENT</div>
+        <div class="lobby-kicker"><i class="network-dot"></i> KASPA MAINNET · AUTOMATIC SETTLEMENT</div>
         <h1>链上斯诺克<br/><span>每一杆，都算数。</span></h1>
-        <p>创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。</p>
+        <p>创建房间、双方锁定少量真实 KAS、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。</p>
         <div class="lobby-actions">
-          <div class="create-box"><select id="create-stake"><option value="5">5 TKAS / 人</option><option value="25" selected>25 TKAS / 人</option><option value="50">50 TKAS / 人</option><option value="100">100 TKAS / 人</option></select><button class="lobby-primary" id="create-room">创建对战房间</button></div>
+          <div class="create-box"><select id="create-stake"><option value="0.05">0.05 KAS / 人</option><option value="0.1" selected>0.1 KAS / 人</option></select><button class="lobby-primary" id="create-room">创建对战房间</button></div>
           <div class="join-box"><input id="join-code" placeholder="输入房间号 KSP-XXXXX" maxlength="16"/><button id="join-room">加入</button></div>
         </div>
       </section>
@@ -87,12 +87,14 @@ document.querySelector("#app").innerHTML = `
           <div class="lobby-panel-head"><div><small>LIVE ROOMS</small><h2>公开房间</h2></div><button class="refresh-rooms" id="refresh-rooms">刷新</button></div>
           <div class="room-list" id="room-list"><div class="room-list-empty">目前没有等待中的房间，创建第一个吧。</div></div>
         </div>
-        <div class="lobby-panel faucet-panel">
-          <div class="faucet-icon">₭</div><small>TN10 FAUCET</small><h2>领取测试币</h2>
-          <p>单次最多 200 TKAS，同一钱包每日最多 2000 TKAS。</p>
-          <input id="faucet-address" placeholder="kaspatest: 钱包地址"/>
-          <div class="faucet-row"><select id="faucet-amount"><option value="50">50 TKAS</option><option value="100">100 TKAS</option><option value="200" selected>200 TKAS</option></select><button id="claim-faucet">领取到钱包</button></div>
-          <div class="faucet-status" id="faucet-status">正在读取水龙头状态…</div>
+        <div class="lobby-panel mainnet-panel">
+          <div class="mainnet-icon">₭</div><small>MAINNET · REAL KAS</small><h2>主网自动结算</h2>
+          <p>双方钱包直接锁定 KAS，服务端不托管奖池；胜负确认后自动执行 Covenant 结算。</p>
+          <div class="mainnet-facts">
+            <div><span>单人押注上限</span><strong id="mainnet-stake-cap">0.1 KAS</strong></div>
+            <div><span>平台抽成</span><strong>0%</strong></div>
+          </div>
+          <div class="mainnet-status" id="mainnet-status"><i class="network-dot"></i><span>正在验证主网结算服务…</span></div>
         </div>
       </section>
     </main>
@@ -100,7 +102,7 @@ document.querySelector("#app").innerHTML = `
     <main class="room-screen" id="room-screen" hidden>
       <section class="room-shell">
         <button class="back-lobby" id="back-lobby">← 退出房间</button>
-        <div class="room-heading"><div><small>PRIVATE MATCH</small><h1 id="waiting-room-title">房间</h1></div><div class="room-stake"><span>总奖池</span><strong id="waiting-pot">50 TKAS</strong></div></div>
+        <div class="room-heading"><div><small>PRIVATE MATCH</small><h1 id="waiting-room-title">房间</h1></div><div class="room-stake"><span>总奖池</span><strong id="waiting-pot">0.2 KAS</strong></div></div>
         <div class="seat-grid">
           <div class="seat-card" id="waiting-seat-0"><div class="seat-number">01</div><div class="seat-avatar">P1</div><h3>等待玩家</h3><p>尚未加入</p><div class="seat-flags"><span>未锁定</span><span>未准备</span></div></div>
           <div class="versus">VS</div>
@@ -180,7 +182,7 @@ document.querySelector("#app").innerHTML = `
               <div class="chain-step pending" id="step-lock"><span class="step-icon">${icon("lock")}</span><span><div class="step-title">Covenant 托管</div><div class="step-sub">非托管 · 双方签名</div></span><span class="step-state">待锁定</span></div>
               <div class="chain-step pending" id="step-settle"><span class="step-icon">${icon("check")}</span><span><div class="step-title">胜者自动结算</div><div class="step-sub">对局记录哈希验证</div></span><span class="step-state">赛后</span></div>
             </div>
-            <div class="pot"><div class="pot-label">本局奖池</div><div class="pot-value"><span id="pot-value">50</span> <small id="pot-symbol">TKAS</small></div><div class="pot-meta"><span>每人 ${model.stakeKas} TKAS</span><span>0% 平台抽成</span></div></div>
+            <div class="pot"><div class="pot-label">本局奖池</div><div class="pot-value"><span id="pot-value">0.2</span> <small id="pot-symbol">KAS</small></div><div class="pot-meta"><span>每人 ${model.stakeKas} KAS</span><span>0% 平台抽成</span></div></div>
             <button class="outline-button" id="escrow-action">查看托管方案</button>
           </section>
           <section class="panel">
@@ -205,6 +207,27 @@ function setNodeText(selector, zh, en) {
   if (node) node.textContent = tr(zh, en);
 }
 
+function updateMainnetPanel() {
+  const status = $("#mainnet-status span");
+  if (!status) return;
+  const stakeOptions = model.config?.stakeOptions?.length ? model.config.stakeOptions : [0.1];
+  const cap = Number(model.config?.mainnetReadiness?.maxStakeKas || Math.max(...stakeOptions));
+  $("#mainnet-stake-cap").textContent = `${cap} ${currencySymbol()}`;
+  if (!model.config?.loaded) {
+    status.textContent = tr("正在验证主网结算服务…", "Verifying mainnet settlement…");
+    $("#mainnet-status").classList.remove("unavailable");
+  } else if (model.config?.escrowReady) {
+    status.textContent = tr("主网结算服务已就绪", "Mainnet settlement is ready");
+    $("#mainnet-status").classList.remove("unavailable");
+  } else if (model.config?.chainMode === "needs-funding") {
+    status.textContent = tr("等待结算手续费到账，锁仓暂不可用", "Settlement funding required; escrow is temporarily disabled");
+    $("#mainnet-status").classList.add("unavailable");
+  } else {
+    status.textContent = tr("主网安全检查未通过，锁仓已关闭", "Mainnet safety checks failed; escrow is disabled");
+    $("#mainnet-status").classList.add("unavailable");
+  }
+}
+
 function applyLanguage() {
   document.documentElement.lang = model.language === "en" ? "en" : "zh-CN";
   $("#language-toggle").textContent = model.language === "en" ? "中文" : "EN";
@@ -227,10 +250,12 @@ function applyLanguage() {
   setNodeText("#join-room", "加入", "Join");
   setNodeText(".rooms-panel h2", "公开房间", "Public rooms");
   setNodeText("#refresh-rooms", "刷新", "Refresh");
-  setNodeText(".faucet-panel h2", "领取测试币", "Get testnet funds");
-  setNodeText(".faucet-panel p", "单次最多 200 TKAS，同一钱包每日最多 2000 TKAS。", "Up to 200 TKAS per claim and 2,000 TKAS per wallet each day.");
-  $("#faucet-address").placeholder = tr("kaspatest: 钱包地址", "kaspatest: wallet address");
-  if (!$("#claim-faucet").disabled) setNodeText("#claim-faucet", "领取到钱包", "Claim to wallet");
+  setNodeText(".room-list-empty", "目前没有等待中的房间，创建第一个吧。", "No rooms are waiting yet. Create the first match.");
+  setNodeText(".mainnet-panel h2", "主网自动结算", "Mainnet settlement");
+  setNodeText(".mainnet-panel > p", "双方钱包直接锁定 KAS，服务端不托管奖池；胜负确认后自动执行 Covenant 结算。", "Both wallets lock KAS directly. The server never holds the prize pool, and the Covenant settles automatically after the result is confirmed.");
+  const mainnetLabels = document.querySelectorAll(".mainnet-facts span");
+  if (mainnetLabels.length === 2) [tr("单人押注上限", "MAX STAKE / PLAYER"), tr("平台抽成", "PLATFORM FEE")].forEach((text, index) => { mainnetLabels[index].textContent = text; });
+  updateMainnetPanel();
   setNodeText("#back-lobby", "← 退出房间", "← Exit room");
   setNodeText("#leave-room", "退出房间", "Exit room");
   setNodeText(".room-stake span", "总奖池", "Total prize");
@@ -1102,9 +1127,11 @@ async function loadConfig() {
   try {
     const previousReady = model.config?.escrowReady;
     const previousStake = Number($("#create-stake").value || model.stakeKas);
-    model.config = await api("/api/config");
+    const serverConfig = await api("/api/config");
+    if (!serverConfig?.network?.id) throw new Error("Settlement service returned an invalid configuration");
+    model.config = { ...serverConfig, loaded: true };
     const network = model.config.network;
-    $("#network-name").textContent = `${network.id.toUpperCase()} · ${network.isTestnet ? "TESTNET" : "MAINNET"}`;
+    $("#network-name").textContent = network.isTestnet ? `${network.id.toUpperCase()} · TESTNET` : "MAINNET · LIVE";
     $(".lobby-kicker").innerHTML = `<i class="network-dot"></i> KASPA ${network.id.toUpperCase()} · AUTOMATIC SETTLEMENT`;
     $("#pot-symbol").textContent = network.symbol;
     if (!model.practiceMode) $("#chain-mode").textContent = chainModeLabel();
@@ -1114,8 +1141,6 @@ async function loadConfig() {
       $("#create-stake").innerHTML = options.map((value) => `<option value="${value}" ${value === selectedStake ? "selected" : ""}>${value} ${network.symbol} / ${tr("人", "player")}</option>`).join("");
       model.stakeKas = Number($("#create-stake").value);
     }
-    $(".faucet-panel").hidden = !model.config.faucetAvailable;
-    if (model.config.faucetAvailable) await loadFaucet();
     if (!network.isTestnet && !model.config.escrowReady) {
       const funding = model.config.mainnetReadiness?.settlementFunding;
       const fundingCode = funding?.code || "";
@@ -1157,7 +1182,6 @@ function renderWalletIdentity() {
   $("#player-address").textContent = model.wallet
     ? short(model.wallet.address)
     : (boundAddress ? `${short(boundAddress)} · ${tr("钱包未连接", "Wallet disconnected")}` : tr("钱包未连接", "Wallet not connected"));
-  if (model.wallet) $("#faucet-address").value = model.wallet.address;
   const step = $("#step-wallet");
   step.querySelector(".step-state").textContent = model.wallet ? tr("已绑定", "Bound") : tr("重新连接", "Reconnect");
   step.querySelector(".step-sub").textContent = model.wallet
@@ -1273,7 +1297,6 @@ async function connectWallet() {
 
 async function disconnectWallet() {
   if (!model.wallet) return;
-  const disconnectedAddress = model.wallet.address;
   walletSessionEnabled = false;
   try {
     if (typeof window.kasware?.disconnect === "function") await window.kasware.disconnect();
@@ -1282,7 +1305,6 @@ async function disconnectWallet() {
     // Clearing the dapp session still requires an explicit reconnect to sign.
   }
   model.wallet = null;
-  if ($("#faucet-address").value === disconnectedAddress) $("#faucet-address").value = "";
   renderWalletIdentity();
   closeModal();
   showMessage(tr("钱包已从本页面断开", "Wallet disconnected from this page"), "score");
@@ -1558,36 +1580,6 @@ $("#post-match-exit").addEventListener("click", () => { closeModal(); leaveCurre
 $("#post-match-rematch").addEventListener("click", () => {
   if (model.practiceMode) resetPracticeFrame();
   else requestRematch();
-});
-
-async function loadFaucet() {
-  try {
-    const info = await api("/api/faucet");
-    model.faucet = info;
-    $("#faucet-status").textContent = info.balanceKas === null ? `${tr("资金地址：", "Funding address: ")}${short(info.address)}` : `${tr("余额", "Balance")} ${Number(info.balanceKas).toFixed(2)} TKAS · ${short(info.address)}`;
-  } catch (error) {
-    $("#faucet-status").textContent = error.message || tr("水龙头暂不可用", "Faucet unavailable");
-  }
-}
-
-$("#claim-faucet").addEventListener("click", async () => {
-  const button = $("#claim-faucet");
-  button.disabled = true;
-  button.textContent = tr("发送中…", "Sending…");
-  try {
-    const result = await api("/api/faucet/claim", {
-      method: "POST",
-      body: JSON.stringify({ address: $("#faucet-address").value.trim(), amountKas: Number($("#faucet-amount").value) })
-    });
-    $("#faucet-status").textContent = `${tr("已发送", "Sent")} ${result.claim.amountKas} TKAS · ${short(result.claim.txids.at(-1) || "")}`;
-    showMessage(tr("测试币已发送到钱包", "Testnet funds sent to wallet"), "score");
-  } catch (error) {
-    $("#faucet-status").textContent = error.message || tr("领取失败", "Claim failed");
-    showMessage(error.message || tr("领取失败", "Claim failed"), "foul");
-  } finally {
-    button.disabled = false;
-    button.textContent = tr("领取到钱包", "Claim to wallet");
-  }
 });
 
 showView("lobby");
