@@ -13,8 +13,8 @@ const DEFAULT_NETWORKS = {
     restApi: "https://api-tn10.kaspa.org",
     explorerApi: "https://api-tn10.kaspa.org",
     kascovNetworkId: "testnet-10",
-    kascovExplorerBase: "https://kascov-explorer.web.app/testnet-10",
-    kascovLiveDataUrl: "https://kascov-explorer.web.app/data/testnet-10-live.json",
+    kascovExplorerBase: "https://kascov.io/share/testnet-10",
+    kascovLiveDataUrl: "https://kascov.io/data/testnet-10-live.json",
     mode: "active",
     requiresMainnetConfirmation: false
   },
@@ -28,8 +28,8 @@ const DEFAULT_NETWORKS = {
     restApi: "https://api.kaspa.org",
     explorerApi: "https://api.kaspa.org",
     kascovNetworkId: "mainnet",
-    kascovExplorerBase: "https://kascov-explorer.web.app/mainnet",
-    kascovLiveDataUrl: "https://kascov-explorer.web.app/data/mainnet-live.json",
+    kascovExplorerBase: "https://kascov.io/share/mainnet",
+    kascovLiveDataUrl: "https://kascov.io/data/mainnet-live.json",
     mode: "production-guarded",
     requiresMainnetConfirmation: true
   }

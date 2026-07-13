@@ -670,7 +670,7 @@ function settlementDetails(value = model.settlement) {
   const covenantId = visible.covenantId || record.chainCovenantId || escrow.deploy?.covenantId || "";
   const txid = visible.txid || record.chainSettlementTxid || escrow.settle?.txid || "";
   const kascovUrl = visible.covenantStoryUrl || escrow.settle?.covenantExplorerUrl ||
-    (covenantId && model.config.network.explorer ? `${model.config.network.explorer.replace(/\/$/, "")}/c/${covenantId}` : "");
+    (covenantId && model.config.network.explorer ? `${model.config.network.explorer.replace(/\/$/, "")}/${covenantId}` : "");
   return {
     status,
     done: status === "settled-on-chain",

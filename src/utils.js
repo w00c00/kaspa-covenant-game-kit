@@ -68,7 +68,7 @@ function explorerTxUrl(txid, network = {}) {
 
 function covenantStoryUrl(covenantId, network = {}) {
   const base = network.kascovExplorerBase || "";
-  return /^[0-9a-f]{64}$/i.test(covenantId || "") && base ? `${base.replace(/\/$/, "")}/c/${covenantId}` : "";
+  return /^[0-9a-f]{64}$/i.test(covenantId || "") && base ? `${base.replace(/\/$/, "")}/${covenantId}` : "";
 }
 
 function assertObject(value, label) {

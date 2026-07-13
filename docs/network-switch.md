@@ -81,8 +81,8 @@ explicit so game projects do not mix networks:
 
 | SDK `networkId` | Kaspa network id | Kascov CLI network | Kascov Explorer base |
 | --- | --- | --- | --- |
-| `tn10` | `testnet-10` | `testnet-10` | `https://kascov-explorer.web.app/testnet-10` |
-| `mainnet` | `mainnet` | `mainnet` | `https://kascov-explorer.web.app/mainnet` |
+| `tn10` | `testnet-10` | `testnet-10` | `https://kascov.io/share/testnet-10` |
+| `mainnet` | `mainnet` | `mainnet` | `https://kascov.io/share/mainnet` |
 
 ```js
 const { kascovTraceCommand } = require("kaspa-covenant-game-kit");
@@ -104,7 +104,7 @@ KASPA_TN10_REST_API=https://api-tn10.kaspa.org
 KASPA_TN10_KASCOV_NETWORK=testnet-10
 KASPA_MAINNET_REST_API=https://api.kaspa.org
 KASPA_MAINNET_KASCOV_NETWORK=mainnet
-KASPA_MAINNET_KASCOV_EXPLORER=https://kascov-explorer.web.app/mainnet
+KASPA_MAINNET_KASCOV_EXPLORER=https://kascov.io/share/mainnet
 ```
 
 ## Production Checklist

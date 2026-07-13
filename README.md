@@ -246,7 +246,7 @@ Thanks to:
 - Kaspa Docs / Toccata: https://docs.kaspa.org/toccata
 - SilverScript: https://github.com/kaspanet/silverscript
 - Kascov and Kascov Lab: https://github.com/Knitser/kascov
-- Kascov Explorer: https://kascov-explorer.web.app
+- Kascov Explorer: https://kascov.io
 - Kasware wallet: https://www.kasware.xyz
 
 ## License

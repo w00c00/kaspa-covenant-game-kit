@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { KaspaCovenantGameKit, kascovTraceCommand, resolveNetworkConfig } = require("../src");
+const { covenantStoryUrl } = require("../src/utils");
 
 function withCleanNetworkEnv(fn) {
   const originalNetwork = process.env.KASPA_COVENANT_NETWORK;
@@ -26,6 +27,7 @@ test("network switch defaults to TN10", () => {
     assert.equal(network.kaspaNetworkId, "testnet-10");
     assert.equal(network.addressPrefix, "kaspatest");
     assert.equal(network.kascovNetworkId, "testnet-10");
+    assert.equal(covenantStoryUrl("ab".repeat(32), network), `https://kascov.io/share/testnet-10/${"ab".repeat(32)}`);
     assert.equal(kascovTraceCommand("abc", network), "kascov --network testnet-10 trace abc");
   });
 });
@@ -37,6 +39,7 @@ test("mainnet requires an explicit confirmation", () => {
     assert.equal(kit.network.id, "mainnet");
     assert.equal(kit.network.addressPrefix, "kaspa");
     assert.equal(kit.network.kascovNetworkId, "mainnet");
+    assert.equal(covenantStoryUrl("cd".repeat(32), kit.network), `https://kascov.io/share/mainnet/${"cd".repeat(32)}`);
     assert.equal(kascovTraceCommand("abc", kit.network), "kascov --network mainnet trace abc");
   });
 });
