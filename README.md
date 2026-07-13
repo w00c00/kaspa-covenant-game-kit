@@ -77,6 +77,7 @@ Default TN10:
 
 ```bash
 KASPA_COVENANT_NETWORK=tn10
+PUBLIC_ORIGINS=https://game.example.com
 ```
 
 Mainnet, same API, explicit confirmation:
@@ -88,6 +89,10 @@ KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
 KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<64-char-reviewed-profile-fingerprint>
 SILVERC_BIN=/absolute/path/to/silverc
 KASPA_COVENANT_MAINNET_SILVERC_SHA256=<64-char-reviewed-compiler-sha256>
+KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
+KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256=<64-char-reviewed-runner-sha256>
+KASCOV_LAB_JOURNAL_DIR=/absolute/private/data/settlement-journal
+PUBLIC_ORIGINS=https://game.example.com
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 

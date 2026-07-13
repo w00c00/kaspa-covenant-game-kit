@@ -18,8 +18,9 @@ const icon = (name) => {
 const roomParam = new URLSearchParams(location.search).get("room");
 let roomId = /^KSP-[A-Z0-9]{4,12}$/.test(roomParam || "") ? roomParam : "";
 let roundId = crypto.randomUUID();
-const playerId = sessionStorage.getItem("kaspa-snooker-player-id") || crypto.randomUUID();
-sessionStorage.setItem("kaspa-snooker-player-id", playerId);
+const playerId = localStorage.getItem("kaspa-snooker-player-id") || sessionStorage.getItem("kaspa-snooker-player-id") || crypto.randomUUID();
+localStorage.setItem("kaspa-snooker-player-id", playerId);
+sessionStorage.removeItem("kaspa-snooker-player-id");
 const demoKeys = ["44".repeat(32), "55".repeat(32)];
 const model = {
   stakeKas: 25,
@@ -600,7 +601,7 @@ socket.on("room:state", (room) => {
   model.livePlayers = room.players || [];
   for (const seat of [0, 1]) {
     const live = model.livePlayers.find((player) => player.seat === seat);
-    const isLocal = live?.playerId === playerId;
+    const isLocal = live?.seat === model.liveSeat;
     const name = isLocal
       ? (model.wallet ? "YOU" : tr("访客球手", "Guest player"))
       : displayPlayerName(live, seat === 0 ? "访客球手" : "等待对手", seat === 0 ? "Guest player" : "Waiting for opponent");
@@ -725,7 +726,7 @@ function renderPostMatchBar() {
   const details = settlementDetails();
   const winnerSeat = Number(model.winnerSeat ?? 0);
   const winner = model.livePlayers.find((player) => player.seat === winnerSeat);
-  const winnerName = winner?.playerId === playerId ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
+  const winnerName = winner?.seat === model.liveSeat ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
   $("#post-match-kicker").textContent = "FRAME COMPLETE · AUTOMATIC SETTLEMENT";
   $("#post-match-title").textContent = tr(`${winnerName} 获胜`, `${winnerName} wins`);
   $("#post-match-status").textContent = details.done
@@ -771,7 +772,7 @@ function renderSettlementModal() {
   const winnerSeat = Number(model.winnerSeat ?? 0);
   const scores = engine.state.scores || [0, 0];
   const winner = model.livePlayers.find((player) => player.seat === winnerSeat);
-  const winnerName = winner?.playerId === playerId ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
+  const winnerName = winner?.seat === model.liveSeat ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
   const kascovUrl = safeLink(details.kascovUrl);
   const txUrl = safeLink(details.txUrl);
   const stepClass = (complete, active = false) => complete ? "done" : (active ? "active" : "");

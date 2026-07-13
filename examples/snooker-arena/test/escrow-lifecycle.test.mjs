@@ -47,6 +47,7 @@ test("two player wallet signatures are merged before an escrow can be broadcast"
   };
 
   const draft = await engine.buildPlayerFundedDeployDraft(match);
+  assert.doesNotThrow(() => JSON.stringify(draft), "the room store must be able to persist a signing draft across restarts");
   assert.match(draft.covenantId, /^[0-9a-f]{64}$/);
   assert.deepEqual(draft.kasware.param.options.signInputs, [
     { index: 0, sighashType: 1 },

@@ -10,7 +10,9 @@ import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { SnookerEngine } from "../src/game-engine.js";
 import { FaucetService } from "./faucet-service.mjs";
+import { CONTENT_SECURITY_POLICY, createOriginPolicy } from "./origin-policy.mjs";
 import { prepareRematchRoom, rematchReady, settlementComplete } from "./rematch.mjs";
+import { resolveRejoiningIdentity, restoreRoom, roomHasChainCommitment, RoomStore } from "./room-store.mjs";
 import { SettlementFundingMonitor } from "./settlement-funding.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
 
@@ -34,6 +36,10 @@ const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEM
 const mainnetSilvercSha256 = process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256 || "";
 const silvercBin = mainnetRequested ? process.env.SILVERC_BIN || "" : "";
 const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
+const configuredOrigins = String(process.env.PUBLIC_ORIGINS || (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173"))
+  .split(",").map((value) => value.trim()).filter(Boolean);
+const originPolicy = createOriginPolicy({ production: process.env.NODE_ENV === "production", allowedOrigins: configuredOrigins });
+const corsOptions = { origin: originPolicy.corsOrigin, credentials: true };
 const faucet = mainnetRequested ? null : new FaucetService({
   dataDir,
   networkId: "testnet-10",
@@ -115,10 +121,33 @@ if (kit.kascovLab) {
 
 const app = express();
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, { cors: { origin: true, credentials: true } });
-const liveRooms = new Map();
-app.use(cors());
+const io = new Server(httpServer, {
+  cors: corsOptions,
+  allowRequest: (req, callback) => callback(null, originPolicy.isAllowed(req.headers.origin))
+});
+const roomStore = new RoomStore(path.join(dataDir, "rooms.json"), kit.network.kaspaNetworkId);
+const liveRooms = new Map(roomStore.load().map((record) => {
+  const room = restoreRoom(record, () => new SnookerEngine(null, {}, { headless: true }));
+  return [room.id, room];
+}));
+app.use((_req, res, next) => {
+  res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "2mb" }));
+
+function persistRooms() {
+  roomStore.save(liveRooms.values());
+}
+
+function hasChainCommitment(room) {
+  return roomHasChainCommitment(room);
+}
 
 function publicRoom(roomId) {
   const room = liveRooms.get(roomId);
@@ -130,7 +159,7 @@ function publicRoom(roomId) {
     practiceMode: Boolean(room?.practiceMode),
     createdAt: room?.createdAt || "",
     turnDeadline: room?.turnDeadline || 0,
-    players: (room?.players || []).map(({ socketId: _socketId, ...player }) => player),
+    players: (room?.players || []).map(({ socketId: _socketId, playerId: _playerId, ...player }) => player),
     gameState: room?.engine?.snapshot() || null,
     gameSnapshot: room?.engine?.exportSnapshot() || null,
     escrow: {
@@ -202,16 +231,19 @@ async function prepareRoomEscrow(room) {
   if (room.escrow?.draft) return room.escrow.draft;
   if (room.escrow?.buildPromise) return room.escrow.buildPromise;
   room.escrow.status = "building-lock-transaction";
+  persistRooms();
   room.escrow.buildPromise = kit.buildDeployDraft({ match: liveMatch(room) })
     .then((draft) => {
       room.escrow.draft = draft;
       room.escrow.status = "awaiting-player-signatures";
       room.escrow.error = "";
+      persistRooms();
       return draft;
     })
     .catch((error) => {
       room.escrow.status = "lock-build-failed";
       room.escrow.error = error.message || String(error);
+      persistRooms();
       throw error;
     })
     .finally(() => { room.escrow.buildPromise = null; });
@@ -224,6 +256,7 @@ async function submitRoomSignature(room, player, signedTransactionSafeJson) {
   const signer = draft.signers.find((item) => item.address === player.address);
   if (!signer || signer.inputIndex !== player.seat) throw new Error("钱包与锁仓输入不匹配");
   player.lockStatus = "submitting";
+  persistRooms();
   const result = await kit.submitPlayerSignature({
     match: liveMatch(room),
     draft,
@@ -245,6 +278,7 @@ async function submitRoomSignature(room, player, signedTransactionSafeJson) {
     room.escrow.status = "awaiting-player-signatures";
     player.lockStatus = "signed";
   }
+  persistRooms();
   return result;
 }
 
@@ -269,6 +303,7 @@ async function confirmRoomEscrow(room) {
         room.escrow.status = "locked-on-chain";
         room.escrow.error = "";
         room.players.forEach((item) => { item.locked = true; item.lockStatus = "locked"; });
+        persistRooms();
         io.to(room.id).emit("room:state", publicRoom(room.id));
         io.to(room.id).emit("room:escrow-locked", {
           lockTxid: room.escrow.record?.deploy?.txid || "",
@@ -279,7 +314,8 @@ async function confirmRoomEscrow(room) {
       await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
     room.escrow.status = "lock-confirmation-timeout";
-    room.escrow.error = "锁仓交易已广播，但暂未在 TN10 UTXO 集中确认";
+    room.escrow.error = `锁仓交易已广播，但暂未在 ${kit.network.label} UTXO 集中确认`;
+    persistRooms();
     io.to(room.id).emit("room:state", publicRoom(room.id));
     return false;
   })().finally(() => { room.escrow.confirmPromise = null; });
@@ -290,13 +326,19 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
   if (!playerId) return { ok: false, error: "playerId is required" };
   for (const joinedRoom of socket.rooms) if (joinedRoom !== socket.id) socket.leave(joinedRoom);
   const previous = room.players.find((player) => player.playerId === playerId);
+  let identity;
+  try {
+    identity = resolveRejoiningIdentity(previous, { name, address, publicKey }, hasChainCommitment(room));
+  } catch (error) {
+    return { ok: false, error: error.message || String(error), code: error.code };
+  }
   let seat = previous?.seat;
   if (!Number.isInteger(seat)) seat = [0, 1].find((candidate) => !room.players.some((player) => player.seat === candidate));
   room.players = room.players.filter((player) => player.playerId !== playerId && player.socketId !== socket.id);
   const role = Number.isInteger(seat) ? "player" : "spectator";
   if (role === "player") {
     room.players.push({
-      playerId, seat, name, address, publicKey, socketId: socket.id, online: true,
+      playerId, seat, ...identity, socketId: socket.id, online: true,
       ready: previous?.ready || false,
       locked: previous?.locked || false,
       lockStatus: previous?.lockStatus || "unsigned"
@@ -307,10 +349,11 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
   socket.data.seat = seat;
   socket.data.role = role;
   socket.join(room.id);
+  persistRooms();
   io.to(room.id).emit("room:state", publicRoom(room.id));
   if (!previous && role === "player") {
     socket.to(room.id).emit("room:player-joined", {
-      player: { playerId, seat, name, address, online: true },
+      player: { seat, name: identity.name, address: identity.address, online: true },
       room: publicRoom(room.id)
     });
   }
@@ -321,6 +364,7 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
 
 function canAct(socket, room) {
   return room && socket.data.role === "player" && Number.isInteger(socket.data.seat) &&
+    room.players.some((player) => player.seat === socket.data.seat && player.socketId === socket.id) &&
     (room.practiceMode || room.engine?.state.currentPlayer === socket.data.seat);
 }
 
@@ -328,11 +372,24 @@ function gameIsActive(room) {
   return room?.status === "playing" || room?.status === "practice";
 }
 
+function resumeRoomRuntime(room) {
+  if (["confirming-lock-on-chain", "lock-confirmation-timeout"].includes(room?.escrow?.status) && room.escrow?.record?.deploy?.txid) {
+    confirmRoomEscrow(room);
+  }
+  if (room?.status === "finished" && room.settlementContext && !settlementComplete(room.settlement)) {
+    scheduleRoomSettlementRetry(room);
+  }
+  if (room?.status === "playing" && room.players?.length === 2 && room.players.every((player) => player.online) && !room.turnTimer) {
+    startTurnTimer(room);
+  }
+}
+
 function resetRoomForRematch(room) {
   clearTurnTimer(room);
   if (room.settlementTimer) clearTimeout(room.settlementTimer);
   room.settlementTimer = null;
   prepareRematchRoom(room);
+  persistRooms();
   return publicRoom(room.id);
 }
 
@@ -352,6 +409,7 @@ function scheduleRoomSettlementRetry(room) {
   room.settlementTimer = setTimeout(async () => {
     room.settlementTimer = null;
     room.settlementAttempts = attempt + 1;
+    persistRooms();
     const context = room.settlementContext;
     try {
       room.settlement = await kit.settleWinner({
@@ -364,6 +422,7 @@ function scheduleRoomSettlementRetry(room) {
     } catch (error) {
       room.settlement = { status: "settlement-retrying", error: error.message || String(error), winnerAddress: context.winnerAddress };
     }
+    persistRooms();
     io.to(room.id).emit("game:settlement", { settlement: room.settlement, room: publicRoom(room.id) });
     if (settlementComplete(room.settlement)) startRematchIfReady(room);
     else scheduleRoomSettlementRetry(room);
@@ -381,10 +440,12 @@ function startTurnTimer(room) {
   clearTurnTimer(room);
   if (room.status !== "playing" || room.engine?.state.winner !== null) return;
   room.turnDeadline = Date.now() + 30_000;
+  persistRooms();
   room.turnTimer = setTimeout(() => {
     if (room.status !== "playing" || room.engine?.inMotion || room.engine?.state.winner !== null) return;
     const timedOutSeat = room.engine.state.currentPlayer;
     room.engine.timeoutFoul();
+    persistRooms();
     const snapshot = room.engine.exportSnapshot();
     io.to(room.id).emit("game:timeout", { seat: timedOutSeat, snapshot });
     io.to(room.id).emit("game:state", { snapshot, sequence: room.engine.state.shot, turnDeadline: Date.now() + 30_000 });
@@ -399,6 +460,7 @@ async function finalizeRoom(room) {
     clearTurnTimer(room);
     const winnerSeat = room.engine.state.winner;
     room.settlement = { status: "practice-no-settlement", potKas: 0 };
+    persistRooms();
     io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement, practiceMode: true });
     return;
   }
@@ -407,15 +469,29 @@ async function finalizeRoom(room) {
   const winnerSeat = room.engine.state.winner;
   const winner = room.players.find((player) => player.seat === winnerSeat);
   const state = room.engine.snapshot();
-  state.winnerAddress = winner?.address || `kaspatest:seat-${winnerSeat}`;
+  if (!winner?.address?.startsWith(`${kit.network.addressPrefix}:`)) {
+    room.settlementContext = null;
+    room.settlement = {
+      status: "settlement-invalid-winner-identity",
+      error: "胜者钱包身份缺失，已停止自动结算",
+      errorEn: "Winner wallet identity is missing; automatic settlement has stopped"
+    };
+    persistRooms();
+    io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement });
+    return;
+  }
+  state.winnerAddress = winner.address;
   state.result = "win";
+  const match = liveMatch(room, state);
+  room.settlementContext = { match, state, winnerAddress: state.winnerAddress };
+  room.settlement ||= { status: "settlement-pending", winnerAddress: state.winnerAddress };
+  persistRooms();
   try {
-    const match = liveMatch(room, state);
-    room.settlementContext = { match, state, winnerAddress: state.winnerAddress };
     room.settlement = await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason: "authoritative-snooker-result" });
   } catch (error) {
     room.settlement = { status: "settlement-pending", error: error.message || String(error), winnerAddress: state.winnerAddress };
   }
+  persistRooms();
   io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement });
   if (!settlementComplete(room.settlement)) scheduleRoomSettlementRetry(room);
   emitLobby();
@@ -484,8 +560,10 @@ io.on("connection", (socket) => {
   socket.on("room:join", ({ roomId, playerId, name, address, publicKey } = {}, acknowledge) => {
     const room = liveRooms.get(String(roomId || "").toUpperCase());
     if (!room) return acknowledge?.({ ok: false, error: "房间不存在或已结束" });
-    if (room.status !== "waiting") return acknowledge?.({ ok: false, error: "该房间已经开始比赛" });
+    const returningPlayer = room.players.some((player) => player.playerId === playerId);
+    if (room.status !== "waiting" && !returningPlayer) return acknowledge?.({ ok: false, error: "该房间已经开始比赛" });
     acknowledge?.(joinRoom(socket, room, { playerId, name, address, publicKey }));
+    resumeRoomRuntime(room);
   });
 
   socket.on("room:practice", ({ roomId } = {}, acknowledge) => {
@@ -500,6 +578,7 @@ io.on("connection", (socket) => {
     room.stakeKas = 0;
     room.escrow.status = "practice-no-stake";
     ensureRoomEngine(room);
+    persistRooms();
     io.to(roomId).emit("room:game-start", {
       room: publicRoom(roomId),
       snapshot: room.engine.exportSnapshot(),
@@ -525,6 +604,7 @@ io.on("connection", (socket) => {
       const signer = draft.signers.find((item) => item.address === player.address);
       if (!signer) throw new Error("当前钱包不在该锁仓交易中");
       player.lockStatus = "signing";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
       acknowledge?.({
         ok: true,
@@ -539,6 +619,7 @@ io.on("connection", (socket) => {
       });
     } catch (error) {
       player.lockStatus = "unsigned";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
       acknowledge?.({ ok: false, error: error.message || String(error), errorEn: error.messageEn, code: error.code });
     }
@@ -564,6 +645,7 @@ io.on("connection", (socket) => {
     } catch (error) {
       player.lockStatus = "unsigned";
       room.escrow.error = error.message || String(error);
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
       acknowledge?.({ ok: false, error: error.message || String(error) });
     }
@@ -574,6 +656,7 @@ io.on("connection", (socket) => {
     const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
     if (player && player.lockStatus === "signing") {
       player.lockStatus = "unsigned";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
     }
   });
@@ -584,6 +667,7 @@ io.on("connection", (socket) => {
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
     if (!player.locked || room.escrow?.status !== "locked-on-chain") return acknowledge?.({ ok: false, error: "请等待双方押金锁仓交易上链" });
     player.ready = true;
+    persistRooms();
     if (room.players.length === 2 && room.escrow.status === "locked-on-chain" && room.players.every((item) => item.locked && item.ready)) {
       room.status = "playing";
       ensureRoomEngine(room);
@@ -598,9 +682,18 @@ io.on("connection", (socket) => {
   socket.on("room:leave", ({ roomId } = {}, acknowledge) => {
     const room = liveRooms.get(roomId);
     if (room) {
-      room.players = room.players.filter((player) => player.socketId !== socket.id);
-      if (!room.players.length) liveRooms.delete(roomId);
+      const player = room.players.find((item) => item.socketId === socket.id);
+      if (player && hasChainCommitment(room)) {
+        player.online = false;
+        player.ready = false;
+        player.socketId = "";
+      } else {
+        room.players = room.players.filter((item) => item.socketId !== socket.id);
+      }
+      if (!room.players.length && !hasChainCommitment(room)) liveRooms.delete(roomId);
       else io.to(roomId).emit("room:state", publicRoom(roomId));
+      if (room.status === "playing" && room.players.some((item) => !item.online)) clearTurnTimer(room);
+      persistRooms();
     }
     socket.leave(roomId);
     socket.data.roomId = "";
@@ -626,6 +719,7 @@ io.on("connection", (socket) => {
     clearTurnTimer(room);
     const snapshot = room.engine.runUntilSettled();
     if (room.engine.state.winner === null && !room.practiceMode) startTurnTimer(room);
+    persistRooms();
     io.to(roomId).emit("game:state", { snapshot, sequence: room.engine.state.shot, turnDeadline: room.turnDeadline });
     finalizeRoom(room);
   });
@@ -637,6 +731,7 @@ io.on("connection", (socket) => {
     const y = Number(placement?.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (!room.engine.applyRemoteCuePlacement({ x, y })) return;
+    persistRooms();
     socket.to(roomId).emit("game:cue-placement", {
       placement: { x, y, player: socket.data.seat, beforeShot: Number(placement?.beforeShot || 1), reason: placement?.reason || "cue-ball-in-hand" }
     });
@@ -659,6 +754,7 @@ io.on("connection", (socket) => {
     if (room.status !== "finished") return acknowledge?.({ ok: false, error: "本局尚未结束" });
     room.rematchSeats ||= new Set();
     room.rematchSeats.add(player.seat);
+    persistRooms();
     const seats = Array.from(room.rematchSeats).sort();
     const required = 2;
     const waitingForSettlement = !settlementComplete(room.settlement);
@@ -675,6 +771,7 @@ io.on("connection", (socket) => {
     room.engine.state.roundId = room.roundId;
     room.status = "practice";
     room.settlement = null;
+    persistRooms();
     io.to(roomId).emit("game:reset", { snapshot: room.engine.exportSnapshot(), practiceMode: true });
     acknowledge?.({ ok: true });
   });
@@ -685,7 +782,9 @@ io.on("connection", (socket) => {
     if (!room) return;
     const player = room.players.find((item) => item.socketId === socket.id);
     if (player) { player.online = false; player.socketId = ""; player.ready = false; }
+    if (room.status === "playing" && room.players.some((item) => !item.online)) clearTurnTimer(room);
     liveRooms.set(roomId, room);
+    persistRooms();
     io.to(roomId).emit("room:state", publicRoom(roomId));
     emitLobby();
   });
@@ -855,6 +954,9 @@ app.use((error, _req, res, _next) => {
 
 httpServer.listen(port, host, () => {
   console.log(`Kaspa Snooker API · ${kit.network.label} · http://${host}:${port}`);
+  if (liveRooms.size) console.log(`Recovered ${liveRooms.size} persisted room(s)`);
+  persistRooms();
+  for (const room of liveRooms.values()) resumeRoomRuntime(room);
   recoverPendingSettlements();
   const recoveryTimer = setInterval(recoverPendingSettlements, 60_000);
   recoveryTimer.unref?.();

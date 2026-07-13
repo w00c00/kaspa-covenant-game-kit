@@ -75,6 +75,7 @@ TN10 默认配置：
 ```dotenv
 KASPA_COVENANT_NETWORK=tn10
 KASPA_COVENANT_ALLOW_MAINNET=false
+PUBLIC_ORIGINS=https://game.example.com
 ```
 
 SDK 的地址、REST/wRPC、Explorer、match 和签名接口已经按网络配置解耦。主网必须同时设置：
@@ -89,6 +90,8 @@ SILVERC_BIN=/opt/kaspa-snooker/bin/silverc
 KASPA_COVENANT_MAINNET_SILVERC_SHA256=<reviewed-silverc-sha256>
 KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
 KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256=<reviewed-runner-sha256>
+KASCOV_LAB_JOURNAL_DIR=/opt/kaspa-snooker-mainnet/data/settlement-journal
+PUBLIC_ORIGINS=https://game.example.com
 KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
@@ -96,7 +99,7 @@ KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 或 settlement verifier 数据。服务会校验 verifier 私钥、公钥、地址和网络，
 发现目录属于另一个网络时直接拒绝启动；主网模式也不会初始化 TN10 faucet。
 
-注意：当前随示例部署的 `kascov-lab` 释放器只按 TN10 验证。主网模式还需要官方 `silverc` 编译器、经过审查的 settlement runner，并分别通过 source-linked program profile 与 runner 两道许可；每位玩家硬限制最多 1 KAS。仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。
+主网模式需要固定 SHA-256 的官方 `silverc` 编译器和经审查的 settlement runner，并分别通过 source-linked program profile、runner 网络能力和持久化交易日志三道许可。每位玩家默认硬限制最多 1 KAS；仅修改网络名称和 `allowMainnet` 无法构建或结算主网房间。生产环境还必须设置 `PUBLIC_ORIGINS`，未配置时服务会拒绝启动，Socket.IO 与 API 不接受其他网站的跨站请求。
 
 ## 主要目录
 

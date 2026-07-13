@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { io } from "socket.io-client";
 
@@ -25,14 +28,31 @@ function waitForServer(child) {
 
 test("room lifecycle preserves seats and refuses ready/lock claims without on-chain escrow", async (context) => {
   const port = 19_000 + Math.floor(Math.random() * 1_000);
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "snooker-room-flow-"));
   const child = spawn(process.execPath, ["server/index.mjs"], {
     cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
     stdio: ["ignore", "pipe", "pipe"]
   });
   context.after(() => child.kill("SIGTERM"));
+  context.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   await waitForServer(child);
   const endpoint = `http://127.0.0.1:${port}`;
+  const allowedHealth = await fetch(`${endpoint}/api/health`, { headers: { origin: endpoint } });
+  assert.equal(allowedHealth.status, 200);
+  assert.equal(allowedHealth.headers.get("access-control-allow-origin"), endpoint);
+  assert.match(allowedHealth.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+  const deniedHealth = await fetch(`${endpoint}/api/health`, { headers: { origin: "https://evil.example" } });
+  assert.equal(deniedHealth.status, 400);
+  const deniedSocket = io(endpoint, {
+    transports: ["websocket"],
+    extraHeaders: { origin: "https://evil.example" },
+    reconnection: false,
+    timeout: 2_000
+  });
+  const deniedSocketError = await once(deniedSocket, "connect_error");
+  assert.ok(deniedSocketError);
+  deniedSocket.close();
   const first = io(endpoint, { transports: ["websocket"] });
   const second = io(endpoint, { transports: ["websocket"] });
   const spectator = io(endpoint, { transports: ["websocket"] });
@@ -42,6 +62,7 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   const created = await request(first, "room:create", { playerId: "PLAYER-A", name: "A", stakeKas: 25 });
   assert.equal(created.ok, true);
   assert.equal(created.seat, 0);
+  assert.equal(created.room.players[0].playerId, undefined);
   const roomId = created.room.roomId;
   const lobby = await request(second, "lobby:list", {});
   assert.equal(lobby.ok, true);
@@ -52,6 +73,7 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   assert.equal(joined.seat, 1);
   assert.equal(playerJoined.player.seat, 1);
   assert.equal(playerJoined.player.name, "B");
+  assert.equal(playerJoined.player.playerId, undefined);
   const watched = await request(spectator, "room:join", { roomId, playerId: "WATCHER", name: "Watcher" });
   assert.equal(watched.role, "spectator");
 
@@ -60,6 +82,16 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   assert.match(earlyReady.error, /锁仓交易上链/);
   const fakeLock = await request(spectator, "room:lock", { roomId });
   assert.equal(fakeLock.ok, false);
+
+  const replacement = io(endpoint, { transports: ["websocket"] });
+  context.after(() => replacement.close());
+  await once(replacement, "connect");
+  const reclaimed = await request(replacement, "room:join", { roomId, playerId: "PLAYER-A", name: "A" });
+  assert.equal(reclaimed.role, "player");
+  assert.equal(reclaimed.seat, 0);
+  const staleSocketLock = await request(first, "room:lock", { roomId });
+  assert.equal(staleSocketLock.ok, false);
+  assert.match(staleSocketLock.error, /无权操作/);
 
   second.close();
   const reconnected = io(endpoint, { transports: ["websocket"] });
@@ -101,4 +133,61 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   const resetPayload = await resetEvent;
   assert.equal(reset.ok, true);
   assert.equal(resetPayload.snapshot.state.shot, 0);
+});
+
+test("a crashed service restores a practice table and lets the same player reclaim the active room", async (context) => {
+  const port = 20_000 + Math.floor(Math.random() * 1_000);
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "snooker-room-restart-"));
+  let child;
+  const start = async () => {
+    child = spawn(process.execPath, ["server/index.mjs"], {
+      cwd: new URL("..", import.meta.url),
+      env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    await waitForServer(child);
+    return child;
+  };
+  context.after(() => child?.kill("SIGTERM"));
+  context.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  await start();
+  const endpoint = `http://127.0.0.1:${port}`;
+  const first = io(endpoint, { transports: ["websocket"] });
+  await once(first, "connect");
+  const created = await request(first, "room:create", { playerId: "CRASH-PLAYER", name: "Crash test", stakeKas: 25 });
+  const roomId = created.room.roomId;
+  const startedEvent = once(first, "room:game-start");
+  await request(first, "room:practice", { roomId });
+  await startedEvent;
+  const placed = once(first, "game:state");
+  first.emit("game:cue-placement", { roomId, placement: { x: 220, y: 279 } });
+  await placed;
+  const shotEvent = once(first, "game:state");
+  first.emit("game:shot", { roomId, angle: 0, power: 12, spin: { x: 0, y: 0 } });
+  const beforeCrash = await shotEvent;
+  assert.equal(beforeCrash.snapshot.state.shot, 1);
+
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  first.close();
+
+  await start();
+  const recovered = io(endpoint, { transports: ["websocket"] });
+  context.after(() => recovered.close());
+  await once(recovered, "connect");
+  const rejoined = await request(recovered, "room:join", { roomId, playerId: "CRASH-PLAYER", name: "Crash test" });
+  assert.equal(rejoined.ok, true);
+  assert.equal(rejoined.role, "player");
+  assert.equal(rejoined.room.status, "practice");
+  assert.equal(rejoined.room.gameSnapshot.state.shot, 1);
+  assert.deepEqual(rejoined.room.gameSnapshot.balls, beforeCrash.snapshot.balls);
+
+  const left = await request(recovered, "room:leave", { roomId });
+  assert.equal(left.ok, true);
+  const lobby = await request(recovered, "lobby:list", {});
+  assert.equal(lobby.rooms.some((room) => room.roomId === roomId), false);
+  const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, "rooms.json"), "utf8"));
+  assert.equal(persisted.rooms.some((room) => room.id === roomId), false);
 });
