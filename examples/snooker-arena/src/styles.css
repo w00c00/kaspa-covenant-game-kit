@@ -414,6 +414,8 @@ body::before {
 .settlement-links a { width: auto; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; text-decoration: none; }
 .rematch-hint { margin-top: 9px; color: #62766f; font-size: 8px; text-align: center; }
 .modal-actions button:disabled { opacity: .48; cursor: not-allowed; }
+.danger-button { border-color: rgba(255,120,90,.5) !important; color: #ff9b84 !important; }
+.primary-button.danger-button { background: linear-gradient(135deg,#b93c2d,#7c241d); color: #fff !important; }
 .text-button { background: transparent; color: #7f958c; padding: 4px; }
 .text-button:hover { color: #fff; }
 .text-button svg { width: 18px; height: 18px; }

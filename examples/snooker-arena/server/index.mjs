@@ -417,7 +417,7 @@ function scheduleRoomSettlementRetry(room) {
         match: context.match,
         state: context.state,
         winnerAddress: context.winnerAddress,
-        reason: "authoritative-snooker-result-retry",
+        reason: context.reason || "authoritative-snooker-result-retry",
         settlementId: room.settlement?.settlement?.id || ""
       });
     } catch (error) {
@@ -484,11 +484,14 @@ async function finalizeRoom(room) {
   state.winnerAddress = winner.address;
   state.result = "win";
   const match = liveMatch(room, state);
-  room.settlementContext = { match, state, winnerAddress: state.winnerAddress };
+  const reason = state.visits?.at(-1)?.reason === "concession"
+    ? "authoritative-player-concession"
+    : "authoritative-snooker-result";
+  room.settlementContext = { match, state, winnerAddress: state.winnerAddress, reason };
   room.settlement ||= { status: "settlement-pending", winnerAddress: state.winnerAddress };
   persistRooms();
   try {
-    room.settlement = await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason: "authoritative-snooker-result" });
+    room.settlement = await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason });
   } catch (error) {
     room.settlement = { status: "settlement-pending", error: error.message || String(error), winnerAddress: state.winnerAddress };
   }
@@ -737,6 +740,29 @@ io.on("connection", (socket) => {
       placement: { x, y, player: socket.data.seat, beforeShot: Number(placement?.beforeShot || 1), reason: placement?.reason || "cue-ball-in-hand" }
     });
     io.to(roomId).emit("game:state", { snapshot: room.engine.exportSnapshot(), sequence: room.engine.state.shot, turnDeadline: room.turnDeadline });
+  });
+
+  socket.on("game:concede", async ({ roomId } = {}, acknowledge) => {
+    const room = liveRooms.get(roomId);
+    const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
+    if (!player || socket.data.roomId !== roomId) {
+      return acknowledge?.({ ok: false, error: "无权操作该房间", errorEn: "Not authorized for this room" });
+    }
+    if (room.practiceMode || room.status !== "playing" || room.engine?.state.winner !== null) {
+      return acknowledge?.({ ok: false, error: "当前对局不能认输", errorEn: "This frame cannot be conceded" });
+    }
+    if (room.engine.inMotion) {
+      return acknowledge?.({ ok: false, error: "请等待所有球静止后再认输", errorEn: "Wait for every ball to stop before conceding" });
+    }
+    if (!room.engine.concede(player.seat)) {
+      return acknowledge?.({ ok: false, error: "认输请求未被规则引擎接受", errorEn: "The rules engine rejected the concession" });
+    }
+    clearTurnTimer(room);
+    persistRooms();
+    const winnerSeat = player.seat === 0 ? 1 : 0;
+    io.to(roomId).emit("game:conceded", { seat: player.seat, winnerSeat });
+    await finalizeRoom(room);
+    acknowledge?.({ ok: true, winnerSeat });
   });
 
   socket.on("game:settlement:status", ({ roomId } = {}, acknowledge) => {

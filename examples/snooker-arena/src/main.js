@@ -657,6 +657,9 @@ socket.on("game:rejected", ({ reason, snapshot }) => {
   if (snapshot) engine.importSnapshot(snapshot);
   showMessage(reason || tr("服务器拒绝了这次操作", "Server rejected this action"), "foul");
 });
+socket.on("game:conceded", ({ seat }) => {
+  showMessage(tr(`Player ${Number(seat) + 1} 已认输`, `Player ${Number(seat) + 1} conceded`), "foul");
+});
 
 function settlementDetails(value = model.settlement) {
   const record = value?.settlement || {};
@@ -1229,6 +1232,8 @@ async function buildDraft() {
 }
 
 function showSettings() {
+  const concessionRow = !model.practiceMode && model.currentRoom?.status === "playing" ? `
+      <div class="settings-row"><div><div class="settings-name">${tr("认输", "Concede frame")}</div><div class="settings-help">${tr("由服务端判对手获胜并自动执行链上结算", "The server awards the frame to your opponent and settles on-chain")}</div></div><button class="outline-button danger-button" id="concede-frame" style="width:auto;margin:0;padding:0 12px">${tr("认输", "Concede")}</button></div>` : "";
   const practiceRows = model.practiceMode ? `
       <div class="settings-row"><div><div class="settings-name">${tr("练习模式", "Practice mode")}</div><div class="settings-help">${tr("无钱包、无押注、无链上结算", "No wallet, stake or settlement")}</div></div><strong>FREE PLAY</strong></div>
       <div class="settings-row"><div><div class="settings-name">${tr("重新摆球", "Rack again")}</div><div class="settings-help">${tr("清空当前比分并重新开始练习", "Clear scores and restart practice")}</div></div><button class="outline-button" id="practice-reset" style="width:auto;margin:0;padding:0 12px">${tr("重新摆球", "Rack again")}</button></div>
@@ -1240,7 +1245,8 @@ function showSettings() {
     body: `
       <div class="settings-row"><div><div class="settings-name">${tr("声音", "Sound")}</div><div class="settings-help">${tr("击球、碰球、落袋和犯规提示音", "Shots, collisions, pots and foul cues")}</div></div><button class="outline-button" id="toggle-sound" style="width:auto;margin:0;padding:0 12px">${model.muted ? tr("开启", "Enable") : tr("关闭", "Disable")}</button></div>
       ${practiceRows}
-      <div class="modal-note">${model.practiceMode ? tr("练习模式仍使用完整斯诺克规则，但你可以操作每一个回合。", "Practice uses the full rules, but you control every turn.") : tr("比赛开始后不能单方面重置、改分或手动指定赢家。超时、犯规、胜负和结算全部由服务端权威规则状态机处理。", "After the match starts, scores and winners cannot be changed manually. The authoritative server handles timeouts, fouls, results and settlement.")}</div>`
+      ${concessionRow}
+      <div class="modal-note">${model.practiceMode ? tr("练习模式仍使用完整斯诺克规则，但你可以操作每一个回合。", "Practice uses the full rules, but you control every turn.") : tr("比赛开始后不能单方面重置、改分或手动指定赢家。超时、犯规、认输、胜负和结算全部由服务端权威规则状态机处理。", "After the match starts, scores and winners cannot be changed manually. The authoritative server handles timeouts, fouls, concessions, results and settlement.")}</div>`
   });
   $("#toggle-sound").addEventListener("click", () => {
     model.muted = !model.muted;
@@ -1252,6 +1258,30 @@ function showSettings() {
     else closeModal();
   }));
   $("#practice-leave")?.addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
+  $("#concede-frame")?.addEventListener("click", confirmConcession);
+}
+
+function confirmConcession() {
+  openModal({
+    kind: "concession",
+    eyebrow: "CONCEDE FRAME · 认输",
+    title: tr("确认认输？", "Concede this frame?"),
+    body: `<div class="modal-note">${tr("确认后，对手将立即成为本局胜者，锁仓奖池会按照服务端权威记录自动结算。此操作无法撤销。", "Your opponent will immediately win the frame and the locked prize will settle from the authoritative server record. This cannot be undone.")}</div><div class="modal-actions"><button class="outline-button" id="cancel-concession">${tr("继续比赛", "Keep playing")}</button><button class="primary-button danger-button" id="confirm-concession">${tr("确认认输", "Confirm concession")}</button></div>`
+  });
+  $("#cancel-concession").addEventListener("click", closeModal);
+  $("#confirm-concession").addEventListener("click", async () => {
+    const button = $("#confirm-concession");
+    button.disabled = true;
+    button.textContent = tr("正在提交…", "Submitting…");
+    try {
+      const result = await socketRequest("game:concede", { roomId });
+      if (!result?.ok) throw new Error(responseError(result, "无法认输", "Unable to concede"));
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = tr("确认认输", "Confirm concession");
+      showMessage(error.message || tr("认输失败", "Concession failed"), "foul");
+    }
+  });
 }
 
 function leaveCurrentRoom() {

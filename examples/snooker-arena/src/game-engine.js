@@ -418,6 +418,35 @@ export class SnookerEngine {
     return true;
   }
 
+  concede(player) {
+    if (![0, 1].includes(player) || this.state.winner !== null || this.inMotion) return false;
+    const winner = player === 0 ? 1 : 0;
+    this.cancelCharge();
+    this.state.shot += 1;
+    this.state.breakScore = 0;
+    this.state.winner = winner;
+    this.state.visits.push({
+      number: this.state.shot,
+      player,
+      target: this.state.target,
+      nominatedColor: this.state.nominatedColor,
+      firstHit: null,
+      potted: [],
+      power: 0,
+      angle: 0,
+      spin: { x: 0, y: 0 },
+      points: 0,
+      foul: false,
+      turnEnded: true,
+      reason: "concession"
+    });
+    this.state.nominatedColor = null;
+    this.notify(`Player ${player + 1} 认输`, `Player ${player + 1} conceded`, "foul");
+    this.callbacks.onState?.(this.snapshot());
+    this.callbacks.onFrameEnd?.(this.snapshot());
+    return true;
+  }
+
   enableCuePlacement() {
     if (!this.state.cueBallInHand || this.inMotion) return false;
     this.state.cuePlacementConfirmed = false;
