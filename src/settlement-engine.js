@@ -139,8 +139,9 @@ class SettlementEngine {
       };
     }
 
+    let started = escrowRecord;
     try {
-      const started = this.store?.upsertEscrow({
+      started = this.store?.upsertEscrow({
         ...escrowRecord,
         status: "settling",
         releaseTo,

@@ -637,6 +637,50 @@ test("concurrent and repeated winner settlement runs only once per covenant", as
   assert.equal(repeated.settlement.status, "settled-on-chain");
 });
 
+test("settlement runner failures persist a failed escrow instead of masking the cause", async () => {
+  const store = new JsonStore();
+  const engine = new CovenantEscrowEngine({ store, network: DEFAULT_NETWORKS.tn10 });
+  const proofBuilder = new ProofBuilder({ network: DEFAULT_NETWORKS.tn10, contractSource: "contract Test {}" });
+  const settlementEngine = new SettlementEngine({
+    escrowEngine: engine,
+    proofBuilder,
+    store,
+    kascovLab: {
+      async settleEscrow() {
+        const error = new Error("runner failed");
+        error.stderr = "missing journal directory";
+        throw error;
+      }
+    }
+  });
+  const match = {
+    id: "FAILED-SETTLEMENT-MATCH",
+    roundId: "ROUND-1",
+    game: "duel",
+    stakeKas: 5,
+    players: [
+      { seat: 0, role: "buyer", address: "buyer" },
+      { seat: 1, role: "seller", address: "seller" }
+    ]
+  };
+  store.upsertEscrow({
+    id: engine.escrowId(match),
+    matchId: match.id,
+    roundId: match.roundId,
+    programHex: "00",
+    status: "deployed-player-funded-on-chain",
+    buyer: match.players[0],
+    seller: match.players[1],
+    deploy: { covenantId: "8".repeat(64), txid: "7".repeat(64) }
+  });
+
+  const result = await settlementEngine.settleWinner({ match, winnerAddress: "seller" });
+  assert.equal(result.escrow.status, "settle-failed");
+  assert.equal(result.escrow.error, "runner failed");
+  assert.equal(result.escrow.stderr, "missing journal directory");
+  assert.equal(result.settlement.status, "chain-settle-failed");
+});
+
 test("separate store instances use one durable settlement lease and preserve the first winner", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "covenant-settlement-lease-"));
   const file = path.join(directory, "ledger.json");
