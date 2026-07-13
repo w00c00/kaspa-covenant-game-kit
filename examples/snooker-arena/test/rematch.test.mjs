@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareRematchRoom, rematchReady, settlementComplete } from "../server/rematch.mjs";
+import { prepareRematchRoom, rematchReady, settledRoomCanClose, settlementComplete } from "../server/rematch.mjs";
 
 test("rematch requires completed settlement and creates a clean escrow round", () => {
   assert.equal(settlementComplete({ settlement: { status: "settlement-retrying" } }), false);
@@ -29,6 +29,7 @@ test("rematch requires completed settlement and creates a clean escrow round", (
     assert.equal(player.ready, false);
     assert.equal(player.locked, false);
     assert.equal(player.lockStatus, "unsigned");
+    assert.equal(player.exitRequested, false);
   }
 });
 
@@ -44,4 +45,17 @@ test("players can reserve a rematch before settlement and it starts only when bo
   assert.equal(rematchReady(room), true);
   room.players[1].online = false;
   assert.equal(rematchReady(room), false);
+});
+
+test("a settled room closes only after both players explicitly exit", () => {
+  const room = {
+    status: "finished",
+    settlement: { settlement: { status: "settled-on-chain" } },
+    players: [{ seat: 0, exitRequested: true }, { seat: 1, exitRequested: false }]
+  };
+  assert.equal(settledRoomCanClose(room), false);
+  room.players[1].exitRequested = true;
+  assert.equal(settledRoomCanClose(room), true);
+  room.settlement.settlement.status = "settlement-retrying";
+  assert.equal(settledRoomCanClose(room), false);
 });

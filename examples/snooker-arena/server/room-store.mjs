@@ -65,6 +65,7 @@ export function validateRoomRecord(record) {
     if (typeof player.address !== "string" || player.address.length > 128) fail(`Room ${record.id} player address is invalid`);
     if (typeof player.publicKey !== "string" || player.publicKey.length > 130) fail(`Room ${record.id} player key is invalid`);
     if (typeof player.online !== "boolean" || typeof player.ready !== "boolean" || typeof player.locked !== "boolean") fail(`Room ${record.id} player flags are invalid`);
+    if (player.exitRequested !== undefined && typeof player.exitRequested !== "boolean") fail(`Room ${record.id} player exit flag is invalid`);
     if (!["unsigned", "signing", "submitting", "signed", "locked"].includes(player.lockStatus)) fail(`Room ${record.id} lock status is invalid`);
   }
   if (!record.escrow || typeof record.escrow !== "object" || Array.isArray(record.escrow)) fail(`Room ${record.id} escrow state is invalid`);
@@ -95,6 +96,7 @@ export function snapshotRoom(room) {
       online: Boolean(player.online),
       ready: Boolean(player.ready),
       locked: Boolean(player.locked),
+      exitRequested: Boolean(player.exitRequested),
       lockStatus: player.lockStatus || "unsigned"
     })),
     roundId: room.roundId,
@@ -155,7 +157,7 @@ export function restoreRoom(record, createEngine) {
   delete saved.engineSnapshot;
   const room = {
     ...saved,
-    players: saved.players.map((player) => ({ ...player, online: false, ready: false, socketId: "" })),
+    players: saved.players.map((player) => ({ ...player, online: false, ready: false, exitRequested: Boolean(player.exitRequested), socketId: "" })),
     rematchSeats: new Set(saved.rematchSeats),
     engine: null,
     turnTimer: null,

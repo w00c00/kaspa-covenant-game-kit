@@ -265,3 +265,68 @@ test("only a live player may concede and the server derives the opponent as winn
   assert.equal(finished.room.gameState.visits.at(-1).reason, "concession");
   assert.equal(finished.settlement.settlement.reason, "authoritative-player-concession");
 });
+
+test("a settled committed room is removed only after both players explicitly leave", async (context) => {
+  const port = 22_000 + Math.floor(Math.random() * 1_000);
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "snooker-settled-exit-"));
+  const engine = new SnookerEngine(null, {}, { headless: true });
+  Object.assign(engine.state, { roundId: "ROUND-SETTLED", winner: 0 });
+  new RoomStore(path.join(dataDir, "rooms.json"), "testnet-10").save([{
+    id: "KSP-DONE1",
+    stakeKas: 0.001,
+    status: "finished",
+    practiceMode: false,
+    players: [0, 1].map((seat) => ({
+      playerId: `DONE-${seat}`,
+      seat,
+      name: `Done ${seat + 1}`,
+      address: `kaspatest:done-${seat}`,
+      publicKey: String(seat + 3).repeat(64),
+      socketId: `old-done-${seat}`,
+      online: true,
+      ready: false,
+      locked: true,
+      lockStatus: "locked",
+      exitRequested: false
+    })),
+    roundId: "ROUND-SETTLED",
+    createdAt: new Date().toISOString(),
+    turnDeadline: 0,
+    engine,
+    escrow: {
+      status: "settled-on-chain",
+      draft: null,
+      record: { deploy: { txid: "a".repeat(64), covenantId: "b".repeat(64) } },
+      error: ""
+    },
+    settlement: { settlement: { status: "settled-on-chain", winnerAddress: "kaspatest:done-0" } },
+    settlementContext: null,
+    settlementAttempts: 0,
+    rematchSeats: new Set()
+  }]);
+  const child = spawn(process.execPath, ["server/index.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => child.kill("SIGTERM"));
+  context.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  await waitForServer(child);
+  const endpoint = `http://127.0.0.1:${port}`;
+  const first = io(endpoint, { transports: ["websocket"] });
+  const second = io(endpoint, { transports: ["websocket"] });
+  context.after(() => { first.close(); second.close(); });
+  await Promise.all([once(first, "connect"), once(second, "connect")]);
+  const joinedFirst = await request(first, "room:join", { roomId: "KSP-DONE1", playerId: "DONE-0" });
+  await request(second, "room:join", { roomId: "KSP-DONE1", playerId: "DONE-1" });
+  assert.equal(joinedFirst.room.players[0].exitRequested, undefined);
+
+  await request(first, "room:leave", { roomId: "KSP-DONE1" });
+  let persisted = JSON.parse(fs.readFileSync(path.join(dataDir, "rooms.json"), "utf8"));
+  assert.equal(persisted.rooms.length, 1);
+  assert.equal(persisted.rooms.find((room) => room.id === "KSP-DONE1").players.find((player) => player.seat === 0).exitRequested, true);
+
+  await request(second, "room:leave", { roomId: "KSP-DONE1" });
+  persisted = JSON.parse(fs.readFileSync(path.join(dataDir, "rooms.json"), "utf8"));
+  assert.equal(persisted.rooms.some((room) => room.id === "KSP-DONE1"), false);
+});

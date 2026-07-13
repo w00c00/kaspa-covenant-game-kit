@@ -11,7 +11,7 @@ import { Server } from "socket.io";
 import { SnookerEngine } from "../src/game-engine.js";
 import { FaucetService } from "./faucet-service.mjs";
 import { CONTENT_SECURITY_POLICY, createOriginPolicy } from "./origin-policy.mjs";
-import { prepareRematchRoom, rematchReady, settlementComplete } from "./rematch.mjs";
+import { prepareRematchRoom, rematchReady, settledRoomCanClose, settlementComplete } from "./rematch.mjs";
 import { resolveRejoiningIdentity, restoreRoom, roomHasChainCommitment, RoomStore } from "./room-store.mjs";
 import { SettlementFundingMonitor } from "./settlement-funding.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
@@ -160,7 +160,7 @@ function publicRoom(roomId) {
     practiceMode: Boolean(room?.practiceMode),
     createdAt: room?.createdAt || "",
     turnDeadline: room?.turnDeadline || 0,
-    players: (room?.players || []).map(({ socketId: _socketId, playerId: _playerId, ...player }) => player),
+    players: (room?.players || []).map(({ socketId: _socketId, playerId: _playerId, exitRequested: _exitRequested, ...player }) => player),
     gameState: room?.engine?.snapshot() || null,
     gameSnapshot: room?.engine?.exportSnapshot() || null,
     escrow: {
@@ -342,7 +342,8 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
       playerId, seat, ...identity, socketId: socket.id, online: true,
       ready: previous?.ready || false,
       locked: previous?.locked || false,
-      lockStatus: previous?.lockStatus || "unsigned"
+      lockStatus: previous?.lockStatus || "unsigned",
+      exitRequested: false
     });
   }
   socket.data.roomId = room.id;
@@ -425,10 +426,23 @@ function scheduleRoomSettlementRetry(room) {
     }
     persistRooms();
     io.to(room.id).emit("game:settlement", { settlement: room.settlement, room: publicRoom(room.id) });
-    if (settlementComplete(room.settlement)) startRematchIfReady(room);
+    if (settlementComplete(room.settlement)) {
+      if (!closeSettledRoomIfExited(room)) startRematchIfReady(room);
+    }
     else scheduleRoomSettlementRetry(room);
   }, delay);
   room.settlementTimer.unref?.();
+}
+
+function closeSettledRoomIfExited(room) {
+  if (!settledRoomCanClose(room)) return false;
+  clearTurnTimer(room);
+  if (room.settlementTimer) clearTimeout(room.settlementTimer);
+  room.settlementTimer = null;
+  liveRooms.delete(room.id);
+  persistRooms();
+  emitLobby();
+  return true;
 }
 
 function clearTurnTimer(room) {
@@ -691,10 +705,12 @@ io.on("connection", (socket) => {
         player.online = false;
         player.ready = false;
         player.socketId = "";
+        player.exitRequested = true;
       } else {
         room.players = room.players.filter((item) => item.socketId !== socket.id);
       }
       if (!room.players.length && !hasChainCommitment(room)) liveRooms.delete(roomId);
+      else if (closeSettledRoomIfExited(room)) { /* both players explicitly exited */ }
       else io.to(roomId).emit("room:state", publicRoom(roomId));
       if (room.status === "playing" && room.players.some((item) => !item.online)) clearTurnTimer(room);
       persistRooms();

@@ -4,6 +4,12 @@ export function settlementComplete(result) {
   return result?.settlement?.status === "settled-on-chain" || result?.escrow?.status === "settled-on-chain";
 }
 
+export function settledRoomCanClose(room) {
+  const players = room?.players || [];
+  return room?.status === "finished" && settlementComplete(room.settlement) &&
+    players.length === 2 && players.every((player) => player.exitRequested === true);
+}
+
 export function rematchReady(room) {
   if (room?.status !== "finished" || !settlementComplete(room.settlement)) return false;
   const players = room.players || [];
@@ -29,6 +35,7 @@ export function prepareRematchRoom(room, options = {}) {
     player.ready = false;
     player.locked = false;
     player.lockStatus = "unsigned";
+    player.exitRequested = false;
   }
   return room;
 }
