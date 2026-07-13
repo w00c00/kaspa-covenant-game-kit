@@ -1111,46 +1111,8 @@ async function loadConfig() {
 loadConfig();
 setInterval(loadConfig, 15_000);
 
-function playersPayload() {
-  if (model.livePlayers.length === 2) {
-    return model.livePlayers.slice().sort((a, b) => a.seat - b.seat).map((player) => ({
-      address: player.address || "",
-      publicKey: player.publicKey || ""
-    }));
-  }
-  return [
-    {
-      address: model.wallet?.address || "kaspatest:demo-player-one",
-      publicKey: model.wallet?.publicKey || demoKeys[0]
-    },
-    { address: model.opponent.address, publicKey: model.opponent.publicKey }
-  ];
-}
-
-function gamePayload(extra = {}) {
-  const state = engine.snapshot();
-  return {
-    roomId,
-    roundId,
-    stakeKas: model.stakeKas,
-    players: playersPayload(),
-    state: {
-      roundId,
-      scores: state.scores,
-      currentPlayer: state.currentPlayer,
-      redsRemaining: state.redsRemaining,
-      phase: state.phase,
-      target: state.target,
-      nominatedColor: state.nominatedColor,
-      breakScore: state.breakScore,
-      respottedBlack: Boolean(state.respottedBlack),
-      cueBallInHand: state.cueBallInHand,
-      cuePlacementConfirmed: state.cuePlacementConfirmed,
-      cuePlacements: state.cuePlacements,
-      moves: state.visits
-    },
-    ...extra
-  };
+function escrowApiPayload() {
+  return { roomId, playerId };
 }
 
 async function connectWallet() {
@@ -1216,7 +1178,7 @@ function showWalletModal() {
 async function showEscrow() {
   openModal({ title: tr("正在生成托管方案…", "Generating escrow plan…"), body: `<div class="modal-note">${tr(`SDK 正在把房间、双方公钥和押注金额转换为 ${networkShortName()} Covenant intent。`, `The SDK is converting the room, both public keys and stakes into a ${networkShortName()} Covenant intent.`)}</div>` });
   try {
-    const payload = await api("/api/escrow/intent", { method: "POST", body: JSON.stringify(gamePayload()) });
+    const payload = await api("/api/escrow/intent", { method: "POST", body: JSON.stringify(escrowApiPayload()) });
     model.chain.intent = payload.intent;
     const intent = payload.intent;
     const statusMap = {
@@ -1256,7 +1218,7 @@ async function buildDraft() {
   action.disabled = true;
   action.textContent = tr(`查询 ${networkShortName()} UTXO…`, `Querying ${networkShortName()} UTXOs…`);
   try {
-    const payload = await api("/api/escrow/draft", { method: "POST", body: JSON.stringify(gamePayload()) });
+    const payload = await api("/api/escrow/draft", { method: "POST", body: JSON.stringify(escrowApiPayload()) });
     const draft = payload.draft;
     $("#modal-body").innerHTML = `<div class="data-grid"><div class="data-cell"><div class="data-label">Covenant ID</div><div class="data-value good">${draft.covenantId}</div></div><div class="data-cell"><div class="data-label">Draft Status</div><div class="data-value">${draft.status}</div></div></div><div class="modal-note">${tr("签名草案已构建。下一步由双方钱包分别签署各自输入，再广播锁定交易。", "Signing draft built. Each wallet now signs its own input before the lock transaction is broadcast.")}</div>`;
   } catch (error) {

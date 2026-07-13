@@ -15,6 +15,7 @@ import { prepareRematchRoom, rematchReady, settlementComplete } from "./rematch.
 import { resolveRejoiningIdentity, restoreRoom, roomHasChainCommitment, RoomStore } from "./room-store.mjs";
 import { SettlementFundingMonitor } from "./settlement-funding.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
+import { authorizeRoomApi } from "./room-api-auth.mjs";
 
 const require = createRequire(import.meta.url);
 const kaspa = require("@kluster/kaspa-wasm");
@@ -790,29 +791,6 @@ io.on("connection", (socket) => {
   });
 });
 
-function roomFrom(body = {}) {
-  return {
-    id: body.roomId || "KSP-SNOOKER-001",
-    stakeKas: Number(body.stakeKas || 25),
-    players: (body.players || []).map((player, seat) => ({
-      seat,
-      role: seat === 0 ? "challenger" : "opponent",
-      address: player.address || "",
-      publicKey: player.publicKey || ""
-    }))
-  };
-}
-
-function stateFrom(body = {}) {
-  return snookerAdapter.createState({ ...body.state, roundId: body.roundId || body.state?.roundId });
-}
-
-function matchFrom(body = {}) {
-  const room = roomFrom(body);
-  const state = stateFrom(body);
-  return { room, state, match: kit.toMatch({ game: "snooker", room, state }) };
-}
-
 app.get("/api/health", async (_req, res) => {
   const funding = settlementFunding ? await settlementFunding.status() : null;
   res.json({ ok: true, network: kit.network, settlementFunding: funding });
@@ -895,7 +873,9 @@ app.post("/api/faucet/claim", async (req, res, next) => {
 
 app.post("/api/escrow/intent", (req, res, next) => {
   try {
-    const { match } = matchFrom(req.body);
+    const { room } = authorizeRoomApi(liveRooms, req.body);
+    assertEscrowPlayers(room);
+    const match = liveMatch(room, room.engine?.snapshot() || {});
     res.json({ match, intent: kit.createEscrowIntent({ match }) });
   } catch (error) {
     next(error);
@@ -905,33 +885,13 @@ app.post("/api/escrow/intent", (req, res, next) => {
 app.post("/api/escrow/draft", async (req, res, next) => {
   try {
     await requireSettlementFunding();
-    const { match } = matchFrom(req.body);
-    const draft = await kit.buildDeployDraft({ match });
+    const { room } = authorizeRoomApi(liveRooms, req.body);
+    const match = liveMatch(room, room.engine?.snapshot() || {});
+    const draft = await prepareRoomEscrow(room);
     res.json({ match, draft });
   } catch (error) {
     next(error);
   }
-});
-
-app.post("/api/settlement/prepare", async (req, res, next) => {
-  try {
-    const { match, state } = matchFrom(req.body);
-    state.scores = req.body.state?.scores || state.scores;
-    state.moves = req.body.state?.moves || state.moves;
-    state.winnerAddress = req.body.winnerAddress || state.winnerAddress;
-    state.result = state.winnerAddress ? "win" : state.result;
-    const proof = kit.createSettlementProof({ match, state, winnerAddress: state.winnerAddress });
-    const result = state.winnerAddress
-      ? await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason: "snooker-frame-win" })
-      : null;
-    res.json({ proof, result });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/ledger", (_req, res) => {
-  res.json({ escrows: kit.listEscrows(), settlements: kit.listSettlements() });
 });
 
 app.use(express.static(path.join(root, "dist")));
