@@ -117,6 +117,7 @@ export function snapshotRoom(room) {
 }
 
 export function roomHasChainCommitment(room) {
+  if (room?.escrow?.status === "lock-broadcast-failed" && !room?.escrow?.record?.deploy?.txid) return false;
   return Boolean(
     room?.escrow?.record?.deploy?.txid ||
     room?.escrow?.draft ||

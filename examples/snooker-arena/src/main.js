@@ -512,8 +512,12 @@ function updateWaitingRoom(room) {
   $("#practice-match").hidden = !local || room.players.length !== 1;
   $("#practice-match").disabled = !local || room.players.length !== 1 || local.lockStatus !== "unsigned";
   const escrowUnavailable = model.config.escrowReady === false;
+  const lockFailed = room.escrow?.status === "lock-broadcast-failed";
   $("#lock-stake").disabled = escrowUnavailable || !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
-  $("#lock-stake").textContent = escrowUnavailable
+  if (lockFailed && room.escrow?.recoverable && local) $("#lock-stake").disabled = false;
+  $("#lock-stake").textContent = lockFailed
+    ? tr("关闭失败房间", "Close failed room")
+    : escrowUnavailable
     ? (model.config.chainMode === "needs-funding"
         ? tr("等待结算手续费到账", "Waiting for settlement funding")
         : tr("链上安全配置未就绪", "On-chain safety configuration incomplete"))
@@ -528,7 +532,7 @@ function updateWaitingRoom(room) {
   $("#ready-match").textContent = local?.ready ? tr("已准备 · 等待对手", "Ready · Waiting for opponent") : tr("准备比赛", "Ready to play");
   if (room.players.length < 2) $("#room-notice").textContent = tr("分享房间链接，等待第二位玩家加入。", "Share the room link and wait for a second player.");
   else if (room.escrow?.status === "locked-on-chain") $("#room-notice").textContent = `${tr("锁仓已确认", "Escrow confirmed")}${room.escrow.lockTxid ? ` · TX ${short(room.escrow.lockTxid)}` : ""}${tr("，双方准备后自动开球。", ". The frame starts when both players are ready.")}`;
-  else if (room.escrow?.error) $("#room-notice").textContent = `${tr("锁仓失败：", "Escrow failed: ")}${room.escrow.error}`;
+  else if (room.escrow?.error) $("#room-notice").textContent = `${tr("锁仓失败：", "Escrow failed: ")}${model.language === "en" ? room.escrow.errorEn || room.escrow.error : room.escrow.error}`;
   else $("#room-notice").textContent = tr("请双方依次用钱包签名；两份签名合并并广播成功后，押金才算真正锁定。", "Both players sign their own input. Funds are locked only after the merged transaction is broadcast and confirmed.");
 }
 
@@ -594,8 +598,16 @@ socket.on("room:player-joined", ({ player }) => {
 socket.on("room:player-signed", ({ seat }) => {
   showMessage(tr(`Player ${Number(seat) + 1} 已提交锁仓签名 · 等待另一方`, `Player ${Number(seat) + 1} signed the escrow · Waiting for the other player`), "score");
 });
+socket.on("room:lock-failed", ({ escrow }) => {
+  showMessage(model.language === "en" ? escrow?.errorEn || escrow?.error || "Escrow lock failed" : escrow?.error || "锁仓失败", "foul");
+});
 socket.on("room:escrow-locked", ({ lockTxid }) => {
   showMessage(tr(`双方资金已锁仓并确认${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`, `Both stakes are locked and confirmed${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`), "score");
+});
+socket.on("room:closed", ({ roomId: closedRoomId }) => {
+  if (closedRoomId !== roomId) return;
+  showMessage(tr("失败房间已关闭，请重新创建一局", "Failed room closed. Create a new match."), "score");
+  leaveCurrentRoom({ notifyServer: false });
 });
 socket.on("room:state", (room) => {
   if (roomId && room.roomId === roomId && room.status === "waiting") updateWaitingRoom(room);
@@ -1369,10 +1381,10 @@ function confirmConcession() {
   });
 }
 
-function leaveCurrentRoom() {
+function leaveCurrentRoom(options = {}) {
   clearInterval(clockTimer);
   clearSettlementPolling();
-  socket.emit("room:leave", { roomId }, () => {
+  const finish = () => {
     roomId = "";
     model.currentRoom = null;
     model.liveSeat = null;
@@ -1384,6 +1396,17 @@ function leaveCurrentRoom() {
     hidePostMatchBar();
     history.replaceState({}, "", location.pathname);
     showView("lobby");
+  };
+  if (options.notifyServer === false || !roomId) finish();
+  else socket.emit("room:leave", { roomId }, finish);
+}
+
+function abandonFailedLockRoom() {
+  const current = roomId;
+  socket.emit("room:lock:abandon", { roomId: current }, (result) => {
+    if (!result?.ok) return showMessage(result?.error || tr("无法关闭失败房间", "Unable to close failed room"), "foul");
+    showMessage(tr("失败房间已关闭，请用新的押注档位重新创建", "Failed room closed. Create a new match with a valid stake."), "score");
+    leaveCurrentRoom({ notifyServer: false });
   });
 }
 
@@ -1415,6 +1438,10 @@ $("#practice-match").addEventListener("click", () => {
 });
 $("#lock-stake").addEventListener("click", async () => {
   gameAudio.unlock();
+  if (model.currentRoom?.escrow?.status === "lock-broadcast-failed" && model.currentRoom?.escrow?.recoverable) {
+    abandonFailedLockRoom();
+    return;
+  }
   if (!model.wallet) {
     await connectWallet();
     if (!model.wallet) return;
@@ -1455,6 +1482,7 @@ $("#lock-stake").addEventListener("click", async () => {
     if (!submitted.ok) throw new Error(responseError(submitted, "签名提交失败", "Signature submission failed"));
     if (submitted.status === "locked-on-chain") showMessage(tr(`双方押金已在 ${networkShortName()} 上锁定`, `Both stakes are locked on ${networkShortName()}`), "score");
     else if (submitted.status === "confirming-lock-on-chain") showMessage(tr("锁仓交易已广播，等待链上确认", "Escrow broadcast; waiting for confirmation"), "score");
+    else if (submitted.status === "lock-broadcast-failed") throw new Error(model.language === "en" ? submitted.escrow?.errorEn || submitted.escrow?.error || "Escrow lock failed" : submitted.escrow?.error || "锁仓交易广播失败");
     else showMessage(tr("签名已提交，等待对手签名后自动广播", "Signature submitted; broadcast starts after opponent signs"), "score");
   } catch (error) {
     socket.emit("room:lock:cancel", { roomId });

@@ -37,6 +37,7 @@ const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEM
 const mainnetSilvercSha256 = process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256 || "";
 const silvercBin = mainnetRequested ? process.env.SILVERC_BIN || "" : "";
 const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
+const MAINNET_MIN_STANDARD_STAKE_KAS = 0.05;
 const configuredOrigins = String(process.env.PUBLIC_ORIGINS || (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173"))
   .split(",").map((value) => value.trim()).filter(Boolean);
 const originPolicy = createOriginPolicy({ production: process.env.NODE_ENV === "production", allowedOrigins: configuredOrigins });
@@ -150,6 +151,39 @@ function hasChainCommitment(room) {
   return roomHasChainCommitment(room);
 }
 
+function lockBroadcastFailedWithoutDeploy(room) {
+  return room?.escrow?.status === "lock-broadcast-failed" && !room?.escrow?.record?.deploy?.txid;
+}
+
+function publicLockError(error) {
+  if (error?.code === "COVENANT_STANDARD_MASS_LIMIT") {
+    const minimumStake = error.minimumStakeKas || MAINNET_MIN_STANDARD_STAKE_KAS;
+    return {
+      error: `锁仓金额太小，交易超过主网标准 mass 限制。请关闭本房间并用至少 ${minimumStake} KAS/人重新创建。`,
+      errorEn: `The stake is too small for the network standard mass limit. Close this room and create a new one with at least ${minimumStake} KAS per player.`,
+      code: error.code
+    };
+  }
+  return {
+    error: error?.message || String(error),
+    errorEn: error?.messageEn || error?.message || String(error),
+    code: error?.code || "LOCK_FAILED"
+  };
+}
+
+function markRoomLockBroadcastFailed(room, errorMessage, errorEn = "") {
+  room.escrow.status = "lock-broadcast-failed";
+  room.escrow.error = errorMessage || "锁仓交易广播失败";
+  room.escrow.errorEn = errorEn || room.escrow.error;
+  room.escrow.draft = null;
+  room.escrow.record = null;
+  for (const item of room.players || []) {
+    item.lockStatus = "unsigned";
+    item.locked = false;
+    item.ready = false;
+  }
+}
+
 function publicRoom(roomId) {
   const room = liveRooms.get(roomId);
   const escrow = room?.escrow || {};
@@ -168,7 +202,9 @@ function publicRoom(roomId) {
       covenantId: escrow.draft?.covenantId || escrow.record?.deploy?.covenantId || "",
       lockTxid: escrow.record?.deploy?.txid || "",
       signedSeats: (room?.players || []).filter((player) => player.lockStatus === "signed" || player.locked).map((player) => player.seat),
-      error: escrow.error || ""
+      error: escrow.error || "",
+      errorEn: escrow.errorEn || escrow.error || "",
+      recoverable: lockBroadcastFailedWithoutDeploy(room)
     },
     settlement: room?.settlement || null,
     rematchSeats: Array.from(room?.rematchSeats || []).sort()
@@ -242,8 +278,14 @@ async function prepareRoomEscrow(room) {
       return draft;
     })
     .catch((error) => {
-      room.escrow.status = "lock-build-failed";
-      room.escrow.error = error.message || String(error);
+      const publicError = publicLockError(error);
+      if (error.code === "COVENANT_STANDARD_MASS_LIMIT") {
+        markRoomLockBroadcastFailed(room, publicError.error, publicError.errorEn);
+      } else {
+        room.escrow.status = "lock-build-failed";
+        room.escrow.error = publicError.error;
+        room.escrow.errorEn = publicError.errorEn;
+      }
       persistRooms();
       throw error;
     })
@@ -272,9 +314,8 @@ async function submitRoomSignature(room, player, signedTransactionSafeJson) {
     room.players.forEach((item) => { item.lockStatus = "signed"; });
     confirmRoomEscrow(room);
   } else if (result.escrow?.status === "player-funded-broadcast-failed") {
-    room.escrow.status = "lock-broadcast-failed";
-    room.escrow.error = result.escrow.error || "锁仓交易广播失败";
-    player.lockStatus = "signed";
+    const publicError = publicLockError(result.escrow);
+    markRoomLockBroadcastFailed(room, publicError.error, publicError.errorEn);
   } else {
     room.escrow.status = "awaiting-player-signatures";
     player.lockStatus = "signed";
@@ -557,11 +598,12 @@ io.on("connection", (socket) => {
 
   socket.on("room:create", ({ playerId, name, address, publicKey, stakeKas = 25 } = {}, acknowledge) => {
     const id = createRoomId();
-    const defaultStake = kit.network.id === "mainnet" ? 0.1 : 25;
+    const defaultStake = kit.network.id === "mainnet" ? Math.max(MAINNET_MIN_STANDARD_STAKE_KAS, Math.min(0.1, Number(mainnetMaxStakeKas))) : 25;
     const maximumStake = kit.network.id === "mainnet" ? Number(mainnetMaxStakeKas) : 10_000;
+    const minimumStake = kit.network.id === "mainnet" ? MAINNET_MIN_STANDARD_STAKE_KAS : 0.00000001;
     const room = {
       id,
-      stakeKas: Math.max(0.00000001, Math.min(maximumStake, Number(stakeKas) || defaultStake)),
+      stakeKas: Math.max(minimumStake, Math.min(maximumStake, Number(stakeKas) || defaultStake)),
       status: "waiting",
       players: [],
       roundId: crypto.randomUUID(),
@@ -612,6 +654,17 @@ io.on("connection", (socket) => {
     const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
     if (player.locked) return acknowledge?.({ ok: true, status: "locked-on-chain", room: publicRoom(roomId) });
+    if (lockBroadcastFailedWithoutDeploy(room)) {
+      const publicState = publicRoom(roomId);
+      return acknowledge?.({
+        ok: false,
+        status: "lock-broadcast-failed",
+        error: publicState.escrow.error,
+        errorEn: publicState.escrow.errorEn,
+        code: "LOCK_BROADCAST_FAILED",
+        room: publicState
+      });
+    }
     if (player.lockStatus === "signed") {
       if (room.escrow?.record?.deploy?.txid) confirmRoomEscrow(room);
       return acknowledge?.({ ok: true, status: room.escrow?.record?.deploy?.txid ? "confirming-lock-on-chain" : "waiting-for-opponent-signature", room: publicRoom(roomId) });
@@ -639,7 +692,7 @@ io.on("connection", (socket) => {
       player.lockStatus = "unsigned";
       persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: false, error: error.message || String(error), errorEn: error.messageEn, code: error.code });
+      acknowledge?.({ ok: false, ...publicLockError(error) });
     }
   });
 
@@ -657,16 +710,32 @@ io.on("connection", (socket) => {
     }
     try {
       const result = await submitRoomSignature(room, player, signedTransactionSafeJson);
-      io.to(roomId).emit("room:state", publicRoom(roomId));
-      socket.to(roomId).emit("room:player-signed", { seat: player.seat, room: publicRoom(roomId) });
-      acknowledge?.({ ok: true, status: room.escrow.status, escrow: publicRoom(roomId).escrow, merge: result.merge });
+      const publicState = publicRoom(roomId);
+      io.to(roomId).emit("room:state", publicState);
+      if (room.escrow.status === "lock-broadcast-failed") io.to(roomId).emit("room:lock-failed", { room: publicState, escrow: publicState.escrow });
+      else socket.to(roomId).emit("room:player-signed", { seat: player.seat, room: publicState });
+      acknowledge?.({ ok: true, status: room.escrow.status, escrow: publicState.escrow, merge: result.merge });
     } catch (error) {
       player.lockStatus = "unsigned";
-      room.escrow.error = error.message || String(error);
+      const publicError = publicLockError(error);
+      room.escrow.error = publicError.error;
+      room.escrow.errorEn = publicError.errorEn;
       persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: false, error: error.message || String(error) });
+      acknowledge?.({ ok: false, ...publicError });
     }
+  });
+
+  socket.on("room:lock:abandon", ({ roomId } = {}, acknowledge) => {
+    const room = liveRooms.get(roomId);
+    const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
+    if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
+    if (!lockBroadcastFailedWithoutDeploy(room)) return acknowledge?.({ ok: false, error: "当前房间不能关闭锁仓流程" });
+    liveRooms.delete(roomId);
+    persistRooms();
+    io.to(roomId).emit("room:closed", { roomId, reason: "lock-broadcast-failed" });
+    emitLobby();
+    acknowledge?.({ ok: true });
   });
 
   socket.on("room:lock:cancel", ({ roomId } = {}) => {
@@ -842,8 +911,8 @@ app.get("/api/config", async (_req, res) => {
   const isMainnet = kit.network.id === "mainnet";
   const funding = settlementFunding ? await settlementFunding.status() : { ready: true, code: "NOT_REQUIRED" };
   const mainnetStakeCap = Math.min(1, Number(mainnetMaxStakeKas));
-  const mainnetStakeOptions = [...new Set([0.001, 0.005, 0.01, 0.05, 0.1, mainnetStakeCap])]
-    .filter((stake) => Number.isFinite(stake) && stake > 0 && stake <= mainnetStakeCap)
+  const mainnetStakeOptions = [...new Set([MAINNET_MIN_STANDARD_STAKE_KAS, 0.1, mainnetStakeCap])]
+    .filter((stake) => Number.isFinite(stake) && stake >= MAINNET_MIN_STANDARD_STAKE_KAS && stake <= mainnetStakeCap)
     .sort((left, right) => left - right);
   const publicRunnerHealth = settlementRunnerHealth.ready
     ? {

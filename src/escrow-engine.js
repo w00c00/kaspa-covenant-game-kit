@@ -19,6 +19,7 @@ const {
 const DEFAULT_COMPUTE_BUDGET = 120;
 const DEFAULT_FEE_SHARE_SOMPI = 1_500_000n;
 const MAINNET_CLOSED_TEST_MAX_STAKE_SOMPI = 100_000_000n;
+const DEFAULT_STANDARD_MASS_SAFETY_FLOOR_SOMPI = 5_000_000n;
 
 function loadKaspa(provided) {
   return provided || require("@kluster/kaspa-wasm");
@@ -88,6 +89,25 @@ function transactionCommitment(safeTransactionJson) {
 
 function sameTransactionCommitment(left, right) {
   return JSON.stringify(transactionCommitment(left)) === JSON.stringify(transactionCommitment(right));
+}
+
+function transactionMassLimitError({ kaspa, networkId, transaction, minimumSignatures, stakeSompi }) {
+  let mass = 0n;
+  let maximum = 0n;
+  try { mass = kaspa.calculateTransactionMass(networkId, transaction, minimumSignatures); } catch {}
+  try { maximum = kaspa.maximumStandardTransactionMass(true); } catch {}
+  const minimumStake = DEFAULT_STANDARD_MASS_SAFETY_FLOOR_SOMPI;
+  const message =
+    `Covenant lock transaction is too small for the network standard mass limit` +
+    (mass && maximum ? ` (${mass}/${maximum})` : "") +
+    `. Use at least ${sompiToKas(minimumStake)} KAS per player.`;
+  const error = new Error(message);
+  error.code = "COVENANT_STANDARD_MASS_LIMIT";
+  error.mass = mass ? mass.toString() : "";
+  error.maximumMass = maximum ? maximum.toString() : "";
+  error.minimumStakeKas = sompiToKas(minimumStake);
+  error.stakeKas = sompiToKas(stakeSompi);
+  return error;
 }
 
 class CovenantEscrowEngine {
@@ -364,6 +384,15 @@ class CovenantEscrowEngine {
       payload: ""
     });
     transaction.populateGenesisCovenants([{ authorizingInput: 0, outputs: [0] }]);
+    if (!kaspa.updateTransactionMass(this.network.kaspaNetworkId, transaction, players.length, true)) {
+      throw transactionMassLimitError({
+        kaspa,
+        networkId: this.network.kaspaNetworkId,
+        transaction,
+        minimumSignatures: players.length,
+        stakeSompi
+      });
+    }
     const unsignedTransactionSafeJson = transaction.serializeToSafeJSON();
     const safe = JSON.parse(unsignedTransactionSafeJson);
     const covenantId = safe.outputs?.[0]?.covenant?.covenantId || "";
