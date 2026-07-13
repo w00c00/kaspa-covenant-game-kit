@@ -2,6 +2,7 @@ import "./styles.css";
 import { COLORS, SnookerEngine, touchPullPower } from "./game-engine.js";
 import { io } from "socket.io-client";
 import { gameAudio } from "./audio.js";
+import { roomWalletIdentityFrozen, walletAccountDecision } from "./wallet-guard.js";
 
 const icon = (name) => {
   const paths = {
@@ -1118,6 +1119,98 @@ function escrowApiPayload() {
   return { roomId, playerId };
 }
 
+function localRoomPlayer() {
+  return model.currentRoom?.players?.find((item) => item.seat === model.liveSeat) || null;
+}
+
+function renderWalletIdentity() {
+  const button = $("#wallet");
+  button.classList.toggle("connected", Boolean(model.wallet));
+  button.textContent = model.wallet ? short(model.wallet.address, 6, 4) : tr("连接钱包", "Connect wallet");
+  $("#player-name").textContent = model.wallet ? "YOU" : tr("访客球手", "Guest player");
+  const boundAddress = localRoomPlayer()?.address || "";
+  $("#player-address").textContent = model.wallet
+    ? short(model.wallet.address)
+    : (boundAddress ? `${short(boundAddress)} · ${tr("钱包未连接", "Wallet disconnected")}` : tr("钱包未连接", "Wallet not connected"));
+  if (model.wallet) $("#faucet-address").value = model.wallet.address;
+  const step = $("#step-wallet");
+  step.querySelector(".step-state").textContent = model.wallet ? tr("已绑定", "Bound") : tr("重新连接", "Reconnect");
+  step.querySelector(".step-sub").textContent = model.wallet
+    ? `${model.wallet.provider} · ${tr("公钥", "Public key ")}${model.wallet.publicKey ? tr("已读取", "read") : tr("待授权", "permission needed")}`
+    : tr("账户或网络变化后需重新绑定", "Reconnect after an account or network change");
+}
+
+function invalidateWallet(message) {
+  model.wallet = null;
+  renderWalletIdentity();
+  if (message) showMessage(message, "foul");
+}
+
+function accountDecision(nextAddress) {
+  const player = localRoomPlayer();
+  return walletAccountDecision({
+    addressPrefix: model.config.network.addressPrefix,
+    boundAddress: player?.address || model.wallet?.address || "",
+    nextAddress,
+    identityFrozen: roomWalletIdentityFrozen(model.currentRoom, model.liveSeat)
+  });
+}
+
+async function bindKaswareAddress(address) {
+  let publicKey = "";
+  try { publicKey = await window.kasware.getPublicKey(); } catch { /* surfaced in escrow readiness */ }
+  model.wallet = { address, publicKey, provider: "Kasware" };
+  renderWalletIdentity();
+  if (model.currentRoom?.status === "waiting") {
+    const joined = await socketRequest("room:join", { roomId, ...identity() });
+    enterRoom(joined);
+  }
+}
+
+async function handleWalletAccountsChanged(accounts = []) {
+  const decision = accountDecision(accounts?.[0]);
+  if (decision.action === "bind") {
+    await bindKaswareAddress(decision.address);
+    showMessage(tr("钱包账户已更新", "Wallet account updated"), "score");
+    return;
+  }
+  if (decision.action === "restore-bound-account") {
+    invalidateWallet(tr("锁仓身份已固定，请切回本局原钱包", "Escrow identity is frozen. Switch back to the wallet bound to this frame."));
+    return;
+  }
+  invalidateWallet(decision.action === "wrong-network"
+    ? tr(`钱包网络已变化，请切回 ${networkShortName()}`, `Wallet network changed. Switch back to ${networkShortName()}.`)
+    : tr("钱包已断开，请重新连接", "Wallet disconnected. Reconnect to continue."));
+}
+
+async function assertWalletStillBound() {
+  const wallet = window.kasware;
+  const accounts = await wallet?.getAccounts?.();
+  const decision = accountDecision(accounts?.[0]);
+  if (!model.wallet || decision.action !== "bind" || decision.address !== model.wallet.address) {
+    await handleWalletAccountsChanged(accounts || []);
+    throw new Error(tr("钱包身份刚刚发生变化，请确认账户后重新点击锁仓", "Wallet identity changed. Confirm the account and click lock again."));
+  }
+}
+
+let walletEventsRegistered = false;
+function handleWalletEvent(accounts) {
+  void handleWalletAccountsChanged(accounts).catch((error) => {
+    invalidateWallet(error?.message || tr("钱包状态更新失败，请重新连接", "Wallet state update failed. Please reconnect."));
+  });
+}
+function registerWalletEvents() {
+  const wallet = window.kasware;
+  if (walletEventsRegistered || !wallet?.on) return;
+  walletEventsRegistered = true;
+  wallet.on("accountsChanged", handleWalletEvent);
+  wallet.on("networkChanged", () => {
+    void wallet.getAccounts().then(handleWalletEvent).catch(() => handleWalletEvent([]));
+  });
+}
+registerWalletEvents();
+window.addEventListener("load", registerWalletEvents, { once: true });
+
 async function connectWallet() {
   const button = $("#wallet");
   if (model.wallet) {
@@ -1131,24 +1224,16 @@ async function connectWallet() {
     if (wallet?.requestAccounts) {
       const accounts = await wallet.requestAccounts();
       const address = accounts?.[0];
-      if (!address || !address.toLowerCase().startsWith(`${model.config.network.addressPrefix}:`)) {
+      const decision = accountDecision(address);
+      if (decision.action !== "bind") {
         throw new Error(tr(`钱包网络不匹配，请切换到 ${networkShortName()}`, `Wallet network mismatch. Switch to ${networkShortName()}.`));
       }
-      let publicKey = "";
-      try { publicKey = await wallet.getPublicKey(); } catch { /* surfaced in escrow readiness */ }
-      model.wallet = { address, publicKey, provider: "Kasware" };
+      await bindKaswareAddress(decision.address);
+      registerWalletEvents();
     } else {
       throw new Error(tr(`未检测到 KasWare 钱包，请安装扩展并切换到 Kaspa ${networkShortName()}`, `KasWare was not detected. Install the extension and switch to Kaspa ${networkShortName()}.`));
     }
-    button.classList.add("connected");
-    button.textContent = short(model.wallet.address, 6, 4);
-    $("#player-name").textContent = model.wallet.provider === "Kasware" ? "YOU" : tr("访客球手", "Guest player");
-    $("#player-address").textContent = short(model.wallet.address);
-    $("#faucet-address").value = model.wallet.address;
-    if (model.currentRoom?.status === "waiting") joinRoom(roomId);
-    const step = $("#step-wallet");
-    step.querySelector(".step-state").textContent = tr("已绑定", "Bound");
-    step.querySelector(".step-sub").textContent = `${model.wallet.provider} · ${tr("公钥", "Public key ")}${model.wallet.publicKey ? tr("已读取", "read") : tr("待授权", "permission needed")}`;
+    renderWalletIdentity();
   } catch (error) {
     showMessage(error.message || tr("钱包连接已取消", "Wallet connection cancelled"), "foul");
     button.textContent = tr("连接钱包", "Connect wallet");
@@ -1338,6 +1423,7 @@ $("#lock-stake").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = tr("正在构建双方锁仓交易…", "Building two-party escrow…");
   try {
+    await assertWalletStillBound();
     const prepared = await socketRequest("room:lock", { roomId });
     if (!prepared.ok) throw new Error(responseError(prepared, "锁仓草案创建失败", "Failed to create escrow draft"));
     if (prepared.status === "locked-on-chain") {
