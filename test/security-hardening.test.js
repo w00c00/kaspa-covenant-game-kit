@@ -679,6 +679,18 @@ test("settlement runner failures persist a failed escrow instead of masking the 
   assert.equal(result.escrow.error, "runner failed");
   assert.equal(result.escrow.stderr, "missing journal directory");
   assert.equal(result.settlement.status, "chain-settle-failed");
+
+  settlementEngine.kascovLab = {
+    async settleEscrow() {
+      return { txid: "9".repeat(64), releasedKas: 10 };
+    }
+  };
+  const recovered = await settlementEngine.settleWinner({ match, winnerAddress: "seller" });
+  assert.equal(recovered.escrow.status, "settled-on-chain");
+  assert.equal(recovered.escrow.error, "");
+  assert.equal(recovered.escrow.stderr, "");
+  assert.equal(recovered.settlement.status, "settled-on-chain");
+  assert.equal(recovered.settlement.chainSettlementError, "");
 });
 
 test("separate store instances use one durable settlement lease and preserve the first winner", async () => {

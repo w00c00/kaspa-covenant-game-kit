@@ -156,6 +156,9 @@ class SettlementEngine {
         ...started,
         status: settle.txid ? "settled-on-chain" : "settle-output-unparsed",
         releaseTo,
+        error: "",
+        stdout: "",
+        stderr: "",
         settle: {
           ...settle,
           txExplorerUrl: settle.txid ? explorerTxUrl(settle.txid, this.escrowEngine.network) : "",
@@ -168,7 +171,9 @@ class SettlementEngine {
         chainSettlementTxid: settle.txid || "",
         chainCovenantId: escrowRecord.deploy.covenantId,
         releaseTo,
-        releasedKas: settle.releasedKas || 0
+        releasedKas: settle.releasedKas || 0,
+        chainSettlementError: "",
+        error: ""
       });
       return {
         settlement: updatedSettlement,
