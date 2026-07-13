@@ -99,14 +99,14 @@ document.querySelector("#app").innerHTML = `
 
     <main class="room-screen" id="room-screen" hidden>
       <section class="room-shell">
-        <button class="back-lobby" id="back-lobby">← 返回大厅</button>
+        <button class="back-lobby" id="back-lobby">← 退出房间</button>
         <div class="room-heading"><div><small>PRIVATE MATCH</small><h1 id="waiting-room-title">房间</h1></div><div class="room-stake"><span>总奖池</span><strong id="waiting-pot">50 TKAS</strong></div></div>
         <div class="seat-grid">
           <div class="seat-card" id="waiting-seat-0"><div class="seat-number">01</div><div class="seat-avatar">P1</div><h3>等待玩家</h3><p>尚未加入</p><div class="seat-flags"><span>未锁定</span><span>未准备</span></div></div>
           <div class="versus">VS</div>
           <div class="seat-card" id="waiting-seat-1"><div class="seat-number">02</div><div class="seat-avatar">P2</div><h3>等待玩家</h3><p>尚未加入</p><div class="seat-flags"><span>未锁定</span><span>未准备</span></div></div>
         </div>
-        <div class="room-actions"><button id="practice-match">单机练习</button><button id="lock-stake">连接钱包并锁定押金</button><button id="ready-match" disabled>准备比赛</button></div>
+        <div class="room-actions"><button class="leave-room-button" id="leave-room">退出房间</button><button id="practice-match">单机练习</button><button id="lock-stake">连接钱包并锁定押金</button><button id="ready-match" disabled>准备比赛</button></div>
         <p class="room-notice" id="room-notice">双方各自签署自己的输入，锁仓交易上链后才可开球。</p>
       </section>
     </main>
@@ -231,7 +231,8 @@ function applyLanguage() {
   setNodeText(".faucet-panel p", "单次最多 200 TKAS，同一钱包每日最多 2000 TKAS。", "Up to 200 TKAS per claim and 2,000 TKAS per wallet each day.");
   $("#faucet-address").placeholder = tr("kaspatest: 钱包地址", "kaspatest: wallet address");
   if (!$("#claim-faucet").disabled) setNodeText("#claim-faucet", "领取到钱包", "Claim to wallet");
-  setNodeText("#back-lobby", "← 返回大厅", "← Back to lobby");
+  setNodeText("#back-lobby", "← 退出房间", "← Exit room");
+  setNodeText("#leave-room", "退出房间", "Exit room");
   setNodeText(".room-stake span", "总奖池", "Total prize");
   if (!$("#practice-match").disabled) setNodeText("#practice-match", "单机练习", "Solo practice");
   setNodeText(".frame-info", "FRAME 01 · 一局定胜负", "FRAME 01 · BEST OF 1");
@@ -1434,6 +1435,25 @@ function leaveCurrentRoom(options = {}) {
   else socket.emit("room:leave", { roomId }, finish);
 }
 
+function requestRoomExit() {
+  const committed = roomWalletIdentityFrozen(model.currentRoom, model.liveSeat) && !model.currentRoom?.escrow?.recoverable;
+  if (!committed) {
+    leaveCurrentRoom();
+    return;
+  }
+  openModal({
+    kind: "room-exit",
+    eyebrow: "EXIT ROOM · 退出房间",
+    title: tr("仍要退出当前房间？", "Exit this room anyway?"),
+    body: `<div class="modal-note settlement-error">${tr("本房间已经生成或提交锁仓数据。退出只会离开当前页面，不会撤销钱包签名、链上锁仓或后续结算；你仍可通过房间链接重新进入。", "This room already has escrow data. Exiting only leaves this page; it does not cancel wallet signatures, on-chain escrow, or settlement. You can rejoin with the room link.")}</div><div class="modal-actions"><button class="outline-button" id="cancel-room-exit">${tr("留在房间", "Stay in room")}</button><button class="outline-button danger-button" id="confirm-room-exit">${tr("仍然退出", "Exit anyway")}</button></div>`
+  });
+  $("#cancel-room-exit").addEventListener("click", closeModal);
+  $("#confirm-room-exit").addEventListener("click", () => {
+    closeModal();
+    leaveCurrentRoom();
+  });
+}
+
 function abandonFailedLockRoom() {
   const current = roomId;
   socket.emit("room:lock:abandon", { roomId: current }, (result) => {
@@ -1532,7 +1552,8 @@ $("#lock-stake").addEventListener("click", async () => {
 $("#ready-match").addEventListener("click", () => socket.emit("room:ready", { roomId }, (result) => {
   if (!result?.ok) showMessage(result?.error || tr("无法准备", "Unable to ready up"), "foul");
 }));
-$("#back-lobby").addEventListener("click", leaveCurrentRoom);
+$("#back-lobby").addEventListener("click", requestRoomExit);
+$("#leave-room").addEventListener("click", requestRoomExit);
 $("#post-match-exit").addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
 $("#post-match-rematch").addEventListener("click", () => {
   if (model.practiceMode) resetPracticeFrame();
