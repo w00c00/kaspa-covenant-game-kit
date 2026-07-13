@@ -171,6 +171,13 @@ function publicLockError(error) {
   };
 }
 
+function twoPlayerLockError() {
+  const error = new Error("需要两位玩家加入后才能创建共同锁仓交易");
+  error.messageEn = "Two players must join the room before creating the shared escrow transaction";
+  error.code = "LOCK_REQUIRES_TWO_PLAYERS";
+  return error;
+}
+
 function markRoomLockBroadcastFailed(room, errorMessage, errorEn = "") {
   room.escrow.status = "lock-broadcast-failed";
   room.escrow.error = errorMessage || "锁仓交易广播失败";
@@ -252,7 +259,7 @@ function liveMatch(room, state = {}) {
 }
 
 function assertEscrowPlayers(room) {
-  if (room.players.length !== 2) throw new Error("需要两位玩家加入后才能创建共同锁仓交易");
+  if (room.players.length !== 2) throw twoPlayerLockError();
   const sorted = room.players.slice().sort((a, b) => a.seat - b.seat);
   for (const player of sorted) {
     if (!player.address?.startsWith(`${kit.network.addressPrefix}:`)) throw new Error(`Player ${player.seat + 1} 需要连接 ${kit.network.addressPrefix} 钱包`);
@@ -653,6 +660,7 @@ io.on("connection", (socket) => {
     const room = liveRooms.get(roomId);
     const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
+    if (room.players.length !== 2) return acknowledge?.({ ok: false, ...publicLockError(twoPlayerLockError()) });
     if (player.locked) return acknowledge?.({ ok: true, status: "locked-on-chain", room: publicRoom(roomId) });
     if (lockBroadcastFailedWithoutDeploy(room)) {
       const publicState = publicRoom(roomId);

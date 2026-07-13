@@ -107,6 +107,11 @@ test("room lifecycle preserves seats and refuses ready/lock claims without on-ch
   context.after(() => solo.close());
   await once(solo, "connect");
   const soloRoom = await request(solo, "room:create", { playerId: "SOLO", name: "Solo", stakeKas: 25 });
+  const soloLock = await request(solo, "room:lock", { roomId: soloRoom.room.roomId });
+  assert.equal(soloLock.ok, false);
+  assert.equal(soloLock.code, "LOCK_REQUIRES_TWO_PLAYERS");
+  assert.match(soloLock.error, /需要两位玩家/);
+  assert.match(soloLock.errorEn, /Two players must join/);
   const startedEvent = once(solo, "room:game-start");
   const practice = await request(solo, "room:practice", { roomId: soloRoom.room.roomId });
   const started = await startedEvent;
