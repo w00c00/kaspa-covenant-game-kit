@@ -18,7 +18,7 @@ function normalizeNetworkId(value) {
 }
 
 function mainnetAllowed(options = {}) {
-  return Boolean(options.allowMainnet) || truthy(process.env[ENV_ALLOW_MAINNET_KEY]);
+  return options.allowMainnet === true || truthy(process.env[ENV_ALLOW_MAINNET_KEY]);
 }
 
 function networkIdFrom(options = {}) {
@@ -31,8 +31,16 @@ function networkIdFrom(options = {}) {
   );
 }
 
+function isMainnetNetwork(network = {}) {
+  return normalizeNetworkId(network.id) === "mainnet" ||
+    normalizeNetworkId(network.kaspaNetworkId) === "mainnet" ||
+    normalizeNetworkId(network.kascovNetworkId) === "mainnet" ||
+    String(network.addressPrefix || "").toLowerCase() === "kaspa" ||
+    network.isTestnet === false;
+}
+
 function applyNetworkEnvOverrides(network) {
-  const prefix = network.id === "mainnet" ? "KASPA_MAINNET" : "KASPA_TN10";
+  const prefix = isMainnetNetwork(network) ? "KASPA_MAINNET" : "KASPA_TN10";
   return {
     ...network,
     restApi: process.env[`${prefix}_REST_API`] || network.restApi,
@@ -49,10 +57,19 @@ function resolveNetworkConfig(options = {}) {
     throw new Error(`Unsupported Kaspa network: ${networkIdFrom(options)}. Use "tn10" or "mainnet".`);
   }
   const network = applyNetworkEnvOverrides(selected);
-  if (network.id === "mainnet" && network.requiresMainnetConfirmation !== false && !mainnetAllowed(options)) {
+  const mainnetLike = isMainnetNetwork(network);
+  if (mainnetLike && !mainnetAllowed(options)) {
     throw new Error(
       `Mainnet is disabled by default. Pass allowMainnet: true or set ${ENV_ALLOW_MAINNET_KEY}=true to use real KAS.`
     );
+  }
+  if (mainnetLike) {
+    network.id = "mainnet";
+    network.kaspaNetworkId = "mainnet";
+    network.kascovNetworkId = "mainnet";
+    network.addressPrefix = "kaspa";
+    network.isTestnet = false;
+    network.requiresMainnetConfirmation = true;
   }
   return network;
 }
@@ -87,6 +104,7 @@ module.exports = {
   mainnetAllowed,
   kascovCliNetwork,
   kascovTraceCommand,
+  isMainnetNetwork,
   networkIdFrom,
   networkSwitchConfig,
   normalizeNetworkId,

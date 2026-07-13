@@ -2,6 +2,7 @@ import "./styles.css";
 import { COLORS, SnookerEngine, touchPullPower } from "./game-engine.js";
 import { io } from "socket.io-client";
 import { gameAudio } from "./audio.js";
+import { roomWalletIdentityFrozen, walletAccountDecision } from "./wallet-guard.js";
 
 const icon = (name) => {
   const paths = {
@@ -18,14 +19,15 @@ const icon = (name) => {
 const roomParam = new URLSearchParams(location.search).get("room");
 let roomId = /^KSP-[A-Z0-9]{4,12}$/.test(roomParam || "") ? roomParam : "";
 let roundId = crypto.randomUUID();
-const playerId = sessionStorage.getItem("kaspa-snooker-player-id") || crypto.randomUUID();
-sessionStorage.setItem("kaspa-snooker-player-id", playerId);
+const playerId = localStorage.getItem("kaspa-snooker-player-id") || sessionStorage.getItem("kaspa-snooker-player-id") || crypto.randomUUID();
+localStorage.setItem("kaspa-snooker-player-id", playerId);
+sessionStorage.removeItem("kaspa-snooker-player-id");
 const demoKeys = ["44".repeat(32), "55".repeat(32)];
 const model = {
-  stakeKas: 25,
-  config: { network: { id: "tn10", label: "Kaspa Testnet 10", symbol: "TKAS", isTestnet: true }, chainMode: "preview" },
+  stakeKas: 0.1,
+  config: { network: { id: "mainnet", label: "Kaspa Mainnet", symbol: "KAS", addressPrefix: "kaspa", isTestnet: false }, chainMode: "preview", stakeOptions: [0.05, 0.1], loaded: false },
   wallet: null,
-  opponent: { name: "W0C00", address: "kaspatest:qz8m...7n3r", publicKey: demoKeys[1] },
+  opponent: { name: "W0C00", address: "kaspa:qz8m...7n3r", publicKey: demoKeys[1] },
   chain: { intent: null, proof: null },
   muted: false,
   shotSeconds: 30,
@@ -37,10 +39,22 @@ const model = {
   settlement: null,
   settlementPoll: null,
   winnerSeat: null,
+  rematchRequested: false,
+  fundingCode: "",
   view: "lobby"
 };
 const tr = (zh, en) => model.language === "en" ? en : zh;
-const socket = io({ transports: ["websocket", "polling"] });
+const currencySymbol = () => model.config?.network?.symbol || "KAS";
+const networkShortName = () => String(model.config?.network?.id || "mainnet").toUpperCase();
+const chainModeLabel = () => model.config.chainMode === "live"
+  ? `${networkShortName()} LIVE`
+  : model.config.chainMode === "needs-funding"
+    ? tr("等待结算手续费", "SETTLEMENT FUNDING REQUIRED")
+    : "SETTLEMENT OFFLINE";
+// Register every listener before opening the connection. With autoConnect on,
+// a fast cached page could receive both `connect` and the initial lobby list
+// before the handlers near the middle of this module had been installed.
+const socket = io({ transports: ["websocket", "polling"], autoConnect: false });
 const coarsePointer = matchMedia("(any-pointer: coarse)");
 
 document.querySelector("#app").innerHTML = `
@@ -52,7 +66,7 @@ document.querySelector("#app").innerHTML = `
       </div>
       <button class="room-chip" id="copy-room" aria-label="复制房间号" hidden>私人房 ${icon("copy")}</button>
       <div class="topbar-spacer"></div>
-      <div class="network-pill"><i class="network-dot"></i><span id="network-name">TN10 · TESTNET</span></div>
+      <div class="network-pill"><i class="network-dot"></i><span id="network-name">MAINNET · LIVE</span></div>
       <button class="language-button" id="language-toggle" aria-label="中英文切换">EN</button>
       <button class="icon-button" id="settings" aria-label="游戏设置">${icon("settings")}</button>
       <button class="wallet-button" id="wallet">连接钱包</button>
@@ -60,11 +74,11 @@ document.querySelector("#app").innerHTML = `
 
     <main class="lobby-screen" id="lobby-screen">
       <section class="lobby-hero">
-        <div class="lobby-kicker"><i class="network-dot"></i> KASPA TN10 · AUTOMATIC SETTLEMENT</div>
+        <div class="lobby-kicker"><i class="network-dot"></i> KASPA MAINNET · AUTOMATIC SETTLEMENT</div>
         <h1>链上斯诺克<br/><span>每一杆，都算数。</span></h1>
-        <p>创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。</p>
+        <p>创建房间、双方锁定少量真实 KAS、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。</p>
         <div class="lobby-actions">
-          <div class="create-box"><select id="create-stake"><option value="5">5 TKAS / 人</option><option value="25" selected>25 TKAS / 人</option><option value="50">50 TKAS / 人</option><option value="100">100 TKAS / 人</option></select><button class="lobby-primary" id="create-room">创建对战房间</button></div>
+          <div class="create-box"><select id="create-stake"><option value="0.05">0.05 KAS / 人</option><option value="0.1" selected>0.1 KAS / 人</option></select><button class="lobby-primary" id="create-room">创建对战房间</button></div>
           <div class="join-box"><input id="join-code" placeholder="输入房间号 KSP-XXXXX" maxlength="16"/><button id="join-room">加入</button></div>
         </div>
       </section>
@@ -73,26 +87,28 @@ document.querySelector("#app").innerHTML = `
           <div class="lobby-panel-head"><div><small>LIVE ROOMS</small><h2>公开房间</h2></div><button class="refresh-rooms" id="refresh-rooms">刷新</button></div>
           <div class="room-list" id="room-list"><div class="room-list-empty">目前没有等待中的房间，创建第一个吧。</div></div>
         </div>
-        <div class="lobby-panel faucet-panel">
-          <div class="faucet-icon">₭</div><small>TN10 FAUCET</small><h2>领取测试币</h2>
-          <p>单次最多 200 TKAS，同一钱包每日最多 2000 TKAS。</p>
-          <input id="faucet-address" placeholder="kaspatest: 钱包地址"/>
-          <div class="faucet-row"><select id="faucet-amount"><option value="50">50 TKAS</option><option value="100">100 TKAS</option><option value="200" selected>200 TKAS</option></select><button id="claim-faucet">领取到钱包</button></div>
-          <div class="faucet-status" id="faucet-status">正在读取水龙头状态…</div>
+        <div class="lobby-panel mainnet-panel">
+          <div class="mainnet-icon">₭</div><small>MAINNET · REAL KAS</small><h2>主网自动结算</h2>
+          <p>双方钱包直接锁定 KAS，服务端不托管奖池；胜负确认后自动执行 Covenant 结算。</p>
+          <div class="mainnet-facts">
+            <div><span>单人押注上限</span><strong id="mainnet-stake-cap">0.1 KAS</strong></div>
+            <div><span>平台抽成</span><strong>0%</strong></div>
+          </div>
+          <div class="mainnet-status" id="mainnet-status"><i class="network-dot"></i><span>正在验证主网结算服务…</span></div>
         </div>
       </section>
     </main>
 
     <main class="room-screen" id="room-screen" hidden>
       <section class="room-shell">
-        <button class="back-lobby" id="back-lobby">← 返回大厅</button>
-        <div class="room-heading"><div><small>PRIVATE MATCH</small><h1 id="waiting-room-title">房间</h1></div><div class="room-stake"><span>总奖池</span><strong id="waiting-pot">50 TKAS</strong></div></div>
+        <button class="back-lobby" id="back-lobby">← 退出房间</button>
+        <div class="room-heading"><div><small>PRIVATE MATCH</small><h1 id="waiting-room-title">房间</h1></div><div class="room-stake"><span>总奖池</span><strong id="waiting-pot">0.2 KAS</strong></div></div>
         <div class="seat-grid">
           <div class="seat-card" id="waiting-seat-0"><div class="seat-number">01</div><div class="seat-avatar">P1</div><h3>等待玩家</h3><p>尚未加入</p><div class="seat-flags"><span>未锁定</span><span>未准备</span></div></div>
           <div class="versus">VS</div>
           <div class="seat-card" id="waiting-seat-1"><div class="seat-number">02</div><div class="seat-avatar">P2</div><h3>等待玩家</h3><p>尚未加入</p><div class="seat-flags"><span>未锁定</span><span>未准备</span></div></div>
         </div>
-        <div class="room-actions"><button id="practice-match">单机练习</button><button id="lock-stake">连接钱包并锁定押金</button><button id="ready-match" disabled>准备比赛</button></div>
+        <div class="room-actions"><button class="leave-room-button" id="leave-room">退出房间</button><button id="practice-match">单机练习</button><button id="lock-stake">连接钱包并锁定押金</button><button id="ready-match" disabled>准备比赛</button></div>
         <p class="room-notice" id="room-notice">双方各自签署自己的输入，锁仓交易上链后才可开球。</p>
       </section>
     </main>
@@ -107,11 +123,17 @@ document.querySelector("#app").innerHTML = `
           <div class="frame-info">FRAME 01 · BEST OF 1</div>
           <div class="score-row"><span class="score active" id="score-0">0</span><span class="score-divider">:</span><span class="score" id="score-1">0</span></div>
           <div class="turn-label">单杆 <strong id="break-score">0</strong> · 剩余红球 <strong id="reds-left">15</strong></div>
+          <button class="concede-button" id="concede-match" hidden>认输本局</button>
         </div>
         <div class="player away" id="player-1">
           <div><div class="player-role">等待击球</div><div class="player-name" id="player-1-name">等待对手</div><div class="player-address" id="player-1-address">分享房间链接邀请好友</div></div>
           <div class="avatar">W0<i class="online"></i></div>
         </div>
+      </section>
+
+      <section class="post-match-bar" id="post-match-bar" hidden>
+        <div><small id="post-match-kicker">FRAME COMPLETE</small><strong id="post-match-title">比赛已结束</strong><span id="post-match-status">正在确认链上结算</span></div>
+        <div class="post-match-actions"><button class="outline-button" id="post-match-exit">退出房间</button><button class="primary-button" id="post-match-rematch">预约下一局</button></div>
       </section>
 
       <section class="content-grid">
@@ -160,7 +182,7 @@ document.querySelector("#app").innerHTML = `
               <div class="chain-step pending" id="step-lock"><span class="step-icon">${icon("lock")}</span><span><div class="step-title">Covenant 托管</div><div class="step-sub">非托管 · 双方签名</div></span><span class="step-state">待锁定</span></div>
               <div class="chain-step pending" id="step-settle"><span class="step-icon">${icon("check")}</span><span><div class="step-title">胜者自动结算</div><div class="step-sub">对局记录哈希验证</div></span><span class="step-state">赛后</span></div>
             </div>
-            <div class="pot"><div class="pot-label">本局奖池</div><div class="pot-value"><span id="pot-value">50</span> <small id="pot-symbol">TKAS</small></div><div class="pot-meta"><span>每人 ${model.stakeKas} TKAS</span><span>0% 平台抽成</span></div></div>
+            <div class="pot"><div class="pot-label">本局奖池</div><div class="pot-value"><span id="pot-value">0.2</span> <small id="pot-symbol">KAS</small></div><div class="pot-meta"><span>每人 ${model.stakeKas} KAS</span><span>0% 平台抽成</span></div></div>
             <button class="outline-button" id="escrow-action">查看托管方案</button>
           </section>
           <section class="panel">
@@ -178,29 +200,64 @@ const $ = (selector) => document.querySelector(selector);
 const canvas = $("#game-canvas");
 let clockTimer = null;
 let messageTimer = null;
+let lobbyRefreshTimer = null;
 
 function setNodeText(selector, zh, en) {
   const node = $(selector);
   if (node) node.textContent = tr(zh, en);
 }
 
+function updateMainnetPanel() {
+  const status = $("#mainnet-status span");
+  if (!status) return;
+  const stakeOptions = model.config?.stakeOptions?.length ? model.config.stakeOptions : [0.1];
+  const cap = Number(model.config?.mainnetReadiness?.maxStakeKas || Math.max(...stakeOptions));
+  $("#mainnet-stake-cap").textContent = `${cap} ${currencySymbol()}`;
+  if (!model.config?.loaded) {
+    status.textContent = tr("正在验证主网结算服务…", "Verifying mainnet settlement…");
+    $("#mainnet-status").classList.remove("unavailable");
+  } else if (model.config?.escrowReady) {
+    status.textContent = tr("主网结算服务已就绪", "Mainnet settlement is ready");
+    $("#mainnet-status").classList.remove("unavailable");
+  } else if (model.config?.chainMode === "needs-funding") {
+    status.textContent = tr("等待结算手续费到账，锁仓暂不可用", "Settlement funding required; escrow is temporarily disabled");
+    $("#mainnet-status").classList.add("unavailable");
+  } else {
+    status.textContent = tr("主网安全检查未通过，锁仓已关闭", "Mainnet safety checks failed; escrow is disabled");
+    $("#mainnet-status").classList.add("unavailable");
+  }
+}
+
 function applyLanguage() {
   document.documentElement.lang = model.language === "en" ? "en" : "zh-CN";
   $("#language-toggle").textContent = model.language === "en" ? "中文" : "EN";
   $("#language-toggle").setAttribute("aria-label", tr("Switch to English", "切换到中文"));
+  $("#copy-room").setAttribute("aria-label", tr("复制房间号", "Copy room code"));
+  if (roomId) $("#copy-room").innerHTML = `${tr("私人房", "PRIVATE ROOM")} · ${roomId} ${icon("copy")}`;
   $(".lobby-hero h1").innerHTML = tr("链上斯诺克<br/><span>每一杆，都算数。</span>", "ON-CHAIN SNOOKER<br/><span>EVERY SHOT COUNTS.</span>");
-  setNodeText(".lobby-hero > p", "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。", "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner.");
+  setNodeText(
+    ".lobby-hero > p",
+    model.config.network.isTestnet
+      ? "创建房间、双方锁定测试币、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。"
+      : "创建房间、双方锁定少量真实 KAS、自动执行规则，比赛结束后由 Covenant 将奖池释放给胜者。",
+    model.config.network.isTestnet
+      ? "Create a room, lock testnet funds, play under automatic rules, and let the Covenant release the prize to the winner."
+      : "Create a room, lock a small amount of real KAS, play under automatic rules, and let the Covenant release the prize to the winner."
+  );
   setNodeText("#create-room", "创建对战房间", "Create match");
-  for (const option of $("#create-stake").options) option.textContent = `${option.value} TKAS / ${tr("人", "player")}`;
+  for (const option of $("#create-stake").options) option.textContent = `${option.value} ${currencySymbol()} / ${tr("人", "player")}`;
   $("#join-code").placeholder = tr("输入房间号 KSP-XXXXX", "Enter room code KSP-XXXXX");
   setNodeText("#join-room", "加入", "Join");
   setNodeText(".rooms-panel h2", "公开房间", "Public rooms");
   setNodeText("#refresh-rooms", "刷新", "Refresh");
-  setNodeText(".faucet-panel h2", "领取测试币", "Get testnet funds");
-  setNodeText(".faucet-panel p", "单次最多 200 TKAS，同一钱包每日最多 2000 TKAS。", "Up to 200 TKAS per claim and 2,000 TKAS per wallet each day.");
-  $("#faucet-address").placeholder = tr("kaspatest: 钱包地址", "kaspatest: wallet address");
-  if (!$("#claim-faucet").disabled) setNodeText("#claim-faucet", "领取到钱包", "Claim to wallet");
-  setNodeText("#back-lobby", "← 返回大厅", "← Back to lobby");
+  setNodeText(".room-list-empty", "目前没有等待中的房间，创建第一个吧。", "No rooms are waiting yet. Create the first match.");
+  setNodeText(".mainnet-panel h2", "主网自动结算", "Mainnet settlement");
+  setNodeText(".mainnet-panel > p", "双方钱包直接锁定 KAS，服务端不托管奖池；胜负确认后自动执行 Covenant 结算。", "Both wallets lock KAS directly. The server never holds the prize pool, and the Covenant settles automatically after the result is confirmed.");
+  const mainnetLabels = document.querySelectorAll(".mainnet-facts span");
+  if (mainnetLabels.length === 2) [tr("单人押注上限", "MAX STAKE / PLAYER"), tr("平台抽成", "PLATFORM FEE")].forEach((text, index) => { mainnetLabels[index].textContent = text; });
+  updateMainnetPanel();
+  setNodeText("#back-lobby", "← 退出房间", "← Exit room");
+  setNodeText("#leave-room", "退出房间", "Exit room");
   setNodeText(".room-stake span", "总奖池", "Total prize");
   if (!$("#practice-match").disabled) setNodeText("#practice-match", "单机练习", "Solo practice");
   setNodeText(".frame-info", "FRAME 01 · 一局定胜负", "FRAME 01 · BEST OF 1");
@@ -217,6 +274,7 @@ function applyLanguage() {
   setNodeText(".spin-card .control-label span", "母球击点", "Cue impact");
   setNodeText(".aim-fine em", "微调", "Fine aim");
   setNodeText("#cue-reposition", "重新摆白球", "Reposition cue ball");
+  setNodeText("#concede-match", "认输本局", "Concede frame");
   setNodeText("#cue-placement-banner", "手中球 · 请在 D 区拖动白球", "BALL IN HAND · Drag the cue ball inside the D");
   setNodeText(".touch-power small", "下拉 · 松开发杆", "Pull · Release");
   setNodeText("#aim-hint", coarsePointer.matches ? "滑动球桌瞄准 · 设置母球击点 · 右侧力度杆下拉并松开发杆" : "移动鼠标瞄准 · 左键按住蓄力 · 松开发杆", coarsePointer.matches ? "Swipe to aim · Set cue impact · Pull and release the power bar" : "Move to aim · Hold left mouse to charge · Release to shoot");
@@ -235,17 +293,25 @@ function applyLanguage() {
   if (!(model.lastState?.visits?.length)) $("#activity").innerHTML = tr("<div class=\"activity-empty\">开球后，这里会生成可验证的<br/>压缩对局记录</div>", "<div class=\"activity-empty\">A verifiable compressed transcript<br/>will appear after the opening shot.</div>");
   $("#settings").setAttribute("aria-label", tr("游戏设置", "Game settings"));
   $("#modal-close").setAttribute("aria-label", tr("关闭", "Close"));
+  if (!$("#modal").classList.contains("open")) setNodeText("#modal-title", "链上托管方案", "On-chain escrow plan");
   if (!model.wallet) setNodeText("#wallet", "连接钱包", "Connect wallet");
   engine?.setLocale(model.language);
   if (model.lastState) updateState(model.lastState);
   if (model.currentRoom?.status === "waiting") updateWaitingRoom(model.currentRoom);
   if (model.rooms) renderLobbyRooms(model.rooms);
-  if (model.settlement && $("#modal").classList.contains("open")) renderSettlementModal();
+  if (model.winnerSeat !== null) renderPostMatchBar();
+  if (model.settlement && $("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
 }
 
 function short(value, head = 11, tail = 6) {
   if (!value || value.length < head + tail + 3) return value || "—";
   return `${value.slice(0, head)}…${value.slice(-tail)}`;
+}
+
+function displayPlayerName(player, emptyZh = "等待玩家", emptyEn = "Waiting for player") {
+  if (!player) return tr(emptyZh, emptyEn);
+  if (!player.address && ["访客球手", "Guest player"].includes(player.name)) return tr("访客球手", "Guest player");
+  return player.name || tr("访客球手", "Guest player");
 }
 
 function showMessage(text, type = "neutral") {
@@ -420,6 +486,23 @@ function showView(view) {
   $("#room-screen").hidden = view !== "room";
   $("#game-screen").hidden = view !== "game";
   $("#copy-room").hidden = view === "lobby" || !roomId;
+  clearInterval(lobbyRefreshTimer);
+  lobbyRefreshTimer = null;
+  if (view === "lobby") {
+    const refresh = () => {
+      if (socket.connected) socket.emit("lobby:list", {}, (result) => renderLobbyRooms(result?.rooms || []));
+    };
+    refresh();
+    lobbyRefreshTimer = setInterval(refresh, 5_000);
+  }
+  updateConcedeButton();
+}
+
+function updateConcedeButton() {
+  const button = $("#concede-match");
+  if (!button) return;
+  button.hidden = model.view !== "game" || model.practiceMode || model.currentRoom?.status !== "playing" ||
+    !Number.isInteger(model.liveSeat) || model.winnerSeat !== null;
 }
 
 function renderLobbyRooms(rooms = []) {
@@ -429,7 +512,7 @@ function renderLobbyRooms(rooms = []) {
     list.innerHTML = `<div class="room-list-empty">${tr("目前没有等待中的房间，创建第一个吧。", "No rooms are waiting. Create the first one.")}</div>`;
     return;
   }
-  list.innerHTML = rooms.map((room) => `<button class="lobby-room" data-room="${room.roomId}"><span><b>${room.roomId}</b><small>${room.players.length}/2 ${tr("玩家", "players")}</small></span><span><strong>${room.stakeKas * 2}</strong><small>TKAS ${tr("奖池", "prize")}</small></span><em>${tr("加入", "Join")} →</em></button>`).join("");
+  list.innerHTML = rooms.map((room) => `<button class="lobby-room" data-room="${room.roomId}"><span><b>${room.roomId}</b><small>${room.players.length}/2 ${tr("玩家", "players")}</small></span><span><strong>${room.stakeKas * 2}</strong><small>${currencySymbol()} ${tr("奖池", "prize")}</small></span><em>${tr("加入", "Join")} →</em></button>`).join("");
   list.querySelectorAll("[data-room]").forEach((button) => button.addEventListener("click", () => joinRoom(button.dataset.room)));
 }
 
@@ -437,12 +520,12 @@ function updateWaitingRoom(room) {
   model.currentRoom = room;
   model.livePlayers = room.players || [];
   $("#waiting-room-title").textContent = `${tr("房间", "Room")} ${room.roomId}`;
-  $("#waiting-pot").textContent = `${Number(room.stakeKas || 0) * 2} TKAS`;
+  $("#waiting-pot").textContent = `${Number(room.stakeKas || 0) * 2} ${currencySymbol()}`;
   for (const seat of [0, 1]) {
     const node = $(`#waiting-seat-${seat}`);
     const player = room.players.find((item) => item.seat === seat);
     node.classList.toggle("occupied", Boolean(player));
-    node.querySelector("h3").textContent = player?.name || tr("等待玩家", "Waiting for player");
+    node.querySelector("h3").textContent = displayPlayerName(player);
     node.querySelector("p").textContent = player?.address ? short(player.address) : (player ? tr("演示身份", "Demo identity") : tr("尚未加入", "Not joined"));
     const flags = node.querySelectorAll(".seat-flags span");
     const lockLabels = {
@@ -464,31 +547,43 @@ function updateWaitingRoom(room) {
   const local = room.players.find((item) => item.seat === model.liveSeat);
   $("#practice-match").hidden = !local || room.players.length !== 1;
   $("#practice-match").disabled = !local || room.players.length !== 1 || local.lockStatus !== "unsigned";
-  $("#lock-stake").disabled = !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
-  $("#lock-stake").textContent = local?.locked
+  const escrowUnavailable = model.config.escrowReady === false;
+  const lockFailed = room.escrow?.status === "lock-broadcast-failed";
+  $("#lock-stake").disabled = escrowUnavailable || !local || local.locked || local.lockStatus === "signed" || local.lockStatus === "submitting";
+  if (lockFailed && room.escrow?.recoverable && local) $("#lock-stake").disabled = false;
+  $("#lock-stake").textContent = lockFailed
+    ? tr("关闭失败房间", "Close failed room")
+    : escrowUnavailable
+    ? (model.config.chainMode === "needs-funding"
+        ? tr("等待结算手续费到账", "Waiting for settlement funding")
+        : tr("链上安全配置未就绪", "On-chain safety configuration incomplete"))
+    : local?.locked
     ? tr("锁仓交易已上链", "Escrow confirmed on-chain")
     : local?.lockStatus === "signed"
       ? (room.escrow?.status === "confirming-lock-on-chain" ? tr("交易已广播 · 等待确认", "Broadcast · Waiting for confirmation") : tr("已签名 · 等待对手", "Signed · Waiting for opponent"))
       : local?.lockStatus === "submitting"
         ? tr("正在广播锁仓交易…", "Broadcasting escrow transaction…")
-        : `${tr("签名并锁定", "Sign and lock")} ${room.stakeKas} TKAS`;
+        : `${tr("签名并锁定", "Sign and lock")} ${room.stakeKas} ${currencySymbol()}`;
   $("#ready-match").disabled = !local?.locked || local?.ready;
   $("#ready-match").textContent = local?.ready ? tr("已准备 · 等待对手", "Ready · Waiting for opponent") : tr("准备比赛", "Ready to play");
   if (room.players.length < 2) $("#room-notice").textContent = tr("分享房间链接，等待第二位玩家加入。", "Share the room link and wait for a second player.");
   else if (room.escrow?.status === "locked-on-chain") $("#room-notice").textContent = `${tr("锁仓已确认", "Escrow confirmed")}${room.escrow.lockTxid ? ` · TX ${short(room.escrow.lockTxid)}` : ""}${tr("，双方准备后自动开球。", ". The frame starts when both players are ready.")}`;
-  else if (room.escrow?.error) $("#room-notice").textContent = `${tr("锁仓失败：", "Escrow failed: ")}${room.escrow.error}`;
+  else if (room.escrow?.error) $("#room-notice").textContent = `${tr("锁仓失败：", "Escrow failed: ")}${model.language === "en" ? room.escrow.errorEn || room.escrow.error : room.escrow.error}`;
   else $("#room-notice").textContent = tr("请双方依次用钱包签名；两份签名合并并广播成功后，押金才算真正锁定。", "Both players sign their own input. Funds are locked only after the merged transaction is broadcast and confirmed.");
 }
 
 function enterRoom(result) {
   if (!result?.ok) return showMessage(result?.error || tr("无法加入房间", "Unable to join room"), "foul");
-  roomId = result.room.roomId;
-  model.practiceMode = false;
-  model.stakeKas = Number(result.room.stakeKas || 0);
-  $("#chain-mode").textContent = model.config.chainMode === "live" ? "TN10 LIVE" : "SETTLEMENT OFFLINE";
+  const room = result.room;
+  roomId = room.roomId;
+  model.currentRoom = room;
+  model.livePlayers = room.players || [];
+  model.practiceMode = Boolean(room.practiceMode);
+  model.stakeKas = Number(room.stakeKas || 0);
+  $("#chain-mode").textContent = chainModeLabel();
   $("#pot-value").textContent = String(model.stakeKas * 2);
   $(".pot-label").textContent = tr("本局奖池", "Prize pool");
-  $(".pot-meta span:first-child").textContent = `${tr("每人", "Each")} ${model.stakeKas} TKAS`;
+  $(".pot-meta span:first-child").textContent = `${tr("每人", "Each")} ${model.stakeKas} ${currencySymbol()}`;
   $("#step-wallet .step-state").textContent = model.wallet ? tr("已绑定", "Bound") : tr("待连接", "Connect");
   $("#step-lock .step-state").textContent = tr("待锁定", "Pending");
   $("#step-settle .step-state").textContent = tr("赛后", "Post-game");
@@ -496,8 +591,31 @@ function enterRoom(result) {
   model.liveSeat = result.seat;
   history.replaceState({}, "", `?room=${roomId}`);
   $("#copy-room").innerHTML = `${tr("私人房", "PRIVATE ROOM")} · ${roomId} ${icon("copy")}`;
+  if (room.gameSnapshot) engine.importSnapshot(room.gameSnapshot);
+  if (room.status === "playing" || room.status === "practice") {
+    model.winnerSeat = null;
+    model.rematchRequested = false;
+    hidePostMatchBar();
+    showView("game");
+    if (room.status === "playing") resetClock(room.turnDeadline);
+    else $("#shot-clock").textContent = "∞";
+    showMessage(tr("已恢复当前对局", "Current frame restored"), "score");
+    return;
+  }
+  if (room.status === "finished" || room.status === "practice-finished") {
+    model.winnerSeat = Number(room.gameState?.winner ?? room.gameSnapshot?.state?.winner ?? 0);
+    model.settlement = room.settlement;
+    model.rematchRequested = Boolean(room.rematchSeats?.includes(model.liveSeat));
+    showView("game");
+    renderPostMatchBar();
+    if (!model.practiceMode) {
+      renderSettlementModal();
+      if (!settlementDetails().done) startSettlementPolling();
+    }
+    return;
+  }
   showView("room");
-  updateWaitingRoom(result.room);
+  updateWaitingRoom(room);
 }
 
 function joinRoom(id) {
@@ -509,13 +627,33 @@ socket.on("connect", () => {
   if (roomId) joinRoom(roomId);
 });
 socket.on("lobby:rooms", renderLobbyRooms);
+socket.on("room:player-joined", ({ player }) => {
+  const name = displayPlayerName(player, `Player ${Number(player?.seat) + 1}`, `Player ${Number(player?.seat) + 1}`);
+  showMessage(tr(`${name} 已进入房间`, `${name} joined the room`), "score");
+});
+socket.on("room:player-signed", ({ seat }) => {
+  showMessage(tr(`Player ${Number(seat) + 1} 已提交锁仓签名 · 等待另一方`, `Player ${Number(seat) + 1} signed the escrow · Waiting for the other player`), "score");
+});
+socket.on("room:lock-failed", ({ escrow }) => {
+  showMessage(model.language === "en" ? escrow?.errorEn || escrow?.error || "Escrow lock failed" : escrow?.error || "锁仓失败", "foul");
+});
+socket.on("room:escrow-locked", ({ lockTxid }) => {
+  showMessage(tr(`双方资金已锁仓并确认${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`, `Both stakes are locked and confirmed${lockTxid ? ` · TX ${short(lockTxid)}` : ""}`), "score");
+});
+socket.on("room:closed", ({ roomId: closedRoomId }) => {
+  if (closedRoomId !== roomId) return;
+  showMessage(tr("失败房间已关闭，请重新创建一局", "Failed room closed. Create a new match."), "score");
+  leaveCurrentRoom({ notifyServer: false });
+});
 socket.on("room:state", (room) => {
   if (roomId && room.roomId === roomId && room.status === "waiting") updateWaitingRoom(room);
   model.livePlayers = room.players || [];
   for (const seat of [0, 1]) {
     const live = model.livePlayers.find((player) => player.seat === seat);
-    const isLocal = live?.playerId === playerId;
-    const name = isLocal ? (model.wallet ? "YOU" : tr("访客球手", "Guest player")) : (live?.name || (seat === 0 ? tr("访客球手", "Guest player") : tr("等待对手", "Waiting for opponent")));
+    const isLocal = live?.seat === model.liveSeat;
+    const name = isLocal
+      ? (model.wallet ? "YOU" : tr("访客球手", "Guest player"))
+      : displayPlayerName(live, seat === 0 ? "访客球手" : "等待对手", seat === 0 ? "Guest player" : "Waiting for opponent");
     $(`#player-${seat === 0 ? "name" : "1-name"}`).textContent = name;
     const addressNode = seat === 0 ? $("#player-address") : $("#player-1-address");
     addressNode.textContent = live?.address ? short(live.address) : (live ? tr("已加入私人房", "Joined private room") : tr("分享房间链接邀请好友", "Share the room link to invite a friend"));
@@ -526,6 +664,9 @@ socket.on("room:state", (room) => {
 socket.on("room:game-start", ({ room, snapshot, turnDeadline, practiceMode }) => {
   model.currentRoom = room;
   model.practiceMode = Boolean(practiceMode || room?.practiceMode);
+  model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   roundId = snapshot?.state?.roundId || roundId;
   if (snapshot) engine.importSnapshot(snapshot);
   if (model.practiceMode) {
@@ -545,6 +686,7 @@ socket.on("room:game-start", ({ room, snapshot, turnDeadline, practiceMode }) =>
     resetClock(turnDeadline || room?.turnDeadline);
   }
   showView("game");
+  updateConcedeButton();
   gameAudio.ready();
   showMessage(model.practiceMode ? tr("单机练习开始 · 你可以操作每个回合", "Solo practice started · You control every turn") : tr("双方已锁仓 · 比赛开始", "Both stakes locked · Match started"), "score");
 });
@@ -565,6 +707,9 @@ socket.on("game:rejected", ({ reason, snapshot }) => {
   if (snapshot) engine.importSnapshot(snapshot);
   showMessage(reason || tr("服务器拒绝了这次操作", "Server rejected this action"), "foul");
 });
+socket.on("game:conceded", ({ seat }) => {
+  showMessage(tr(`Player ${Number(seat) + 1} 已认输`, `Player ${Number(seat) + 1} conceded`), "foul");
+});
 
 function settlementDetails(value = model.settlement) {
   const record = value?.settlement || {};
@@ -574,7 +719,7 @@ function settlementDetails(value = model.settlement) {
   const covenantId = visible.covenantId || record.chainCovenantId || escrow.deploy?.covenantId || "";
   const txid = visible.txid || record.chainSettlementTxid || escrow.settle?.txid || "";
   const kascovUrl = visible.covenantStoryUrl || escrow.settle?.covenantExplorerUrl ||
-    (covenantId && model.config.network.explorer ? `${model.config.network.explorer.replace(/\/$/, "")}/c/${covenantId}` : "");
+    (covenantId && model.config.network.explorer ? `${model.config.network.explorer.replace(/\/$/, "")}/${covenantId}` : "");
   return {
     status,
     done: status === "settled-on-chain",
@@ -615,16 +760,77 @@ function clearSettlementPolling() {
   model.settlementPoll = null;
 }
 
+function hidePostMatchBar() {
+  $("#post-match-bar").hidden = true;
+}
+
+function renderPostMatchBar() {
+  const bar = $("#post-match-bar");
+  bar.hidden = false;
+  const button = $("#post-match-rematch");
+  if (model.practiceMode) {
+    $("#post-match-kicker").textContent = "PRACTICE COMPLETE";
+    $("#post-match-title").textContent = tr("练习局已结束", "Practice frame complete");
+    $("#post-match-status").textContent = tr("可以立即重新摆球，或退出返回大厅", "Rack again now or return to the lobby");
+    button.disabled = false;
+    button.textContent = tr("重新摆球", "Rack again");
+    return;
+  }
+  const details = settlementDetails();
+  const winnerSeat = Number(model.winnerSeat ?? 0);
+  const winner = model.livePlayers.find((player) => player.seat === winnerSeat);
+  const winnerName = winner?.seat === model.liveSeat ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
+  $("#post-match-kicker").textContent = "FRAME COMPLETE · AUTOMATIC SETTLEMENT";
+  $("#post-match-title").textContent = tr(`${winnerName} 获胜`, `${winnerName} wins`);
+  $("#post-match-status").textContent = details.done
+    ? tr("链上结算已完成，可以开始下一局", "Settlement complete. The next frame can begin")
+    : tr("链上结算进行中，可先预约下一局", "Settlement in progress. You can reserve the next frame now");
+  button.disabled = model.rematchRequested;
+  button.textContent = model.rematchRequested
+    ? tr("已确认 · 等待对手", "Confirmed · Waiting")
+    : (details.done ? tr("再来一局", "Play again") : tr("预约下一局", "Reserve rematch"));
+}
+
+function requestRematch() {
+  if (!roomId || model.rematchRequested) return;
+  const buttons = [$("#result-rematch"), $("#post-match-rematch")].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; button.textContent = tr("正在确认…", "Confirming…"); });
+  socket.emit("game:rematch", { roomId }, (result) => {
+    if (!result?.ok) {
+      model.rematchRequested = false;
+      renderPostMatchBar();
+      if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+      showMessage(result?.error || tr("无法发起重赛", "Unable to request rematch"), "foul");
+      return;
+    }
+    if (result.started) return;
+    model.rematchRequested = true;
+    renderPostMatchBar();
+    if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+    showMessage(result.waitingForSettlement
+      ? tr("已预约下一局 · 结算完成后自动进入", "Rematch reserved · It will open after settlement")
+      : tr("重赛已确认 · 等待对手", "Rematch confirmed · Waiting for opponent"), "score");
+  });
+}
+
+function resetPracticeFrame() {
+  socket.emit("practice:reset", { roomId }, (result) => {
+    if (!result?.ok) showMessage(result?.error || tr("无法重新摆球", "Unable to rack again"), "foul");
+    else closeModal();
+  });
+}
+
 function renderSettlementModal() {
   const details = settlementDetails();
   const winnerSeat = Number(model.winnerSeat ?? 0);
   const scores = engine.state.scores || [0, 0];
   const winner = model.livePlayers.find((player) => player.seat === winnerSeat);
-  const winnerName = winner?.playerId === playerId ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
+  const winnerName = winner?.seat === model.liveSeat ? tr("你", "YOU") : (winner?.name || `Player ${winnerSeat + 1}`);
   const kascovUrl = safeLink(details.kascovUrl);
   const txUrl = safeLink(details.txUrl);
   const stepClass = (complete, active = false) => complete ? "done" : (active ? "active" : "");
   openModal({
+    kind: "settlement",
     eyebrow: "AUTOMATIC SETTLEMENT · 自动结算",
     title: details.done ? tr("奖池已完成链上结算", "Prize pool settled on-chain") : tr("比赛结束 · 正在自动结算", "Frame complete · Settling automatically"),
     body: `
@@ -632,11 +838,11 @@ function renderSettlementModal() {
       <div class="settlement-progress">
         <div class="settlement-progress-item done"><i>1</i><span><b>${tr("规则确认胜负", "Result verified")}</b><small>${tr("服务端权威对局记录已锁定", "Authoritative transcript locked")}</small></span></div>
         <div class="settlement-progress-item ${stepClass(Boolean(details.txid), !details.txid && !details.failed)}"><i>2</i><span><b>${tr("广播释放交易", "Broadcast release transaction")}</b><small>${details.txid ? `${tr("交易", "TX")} ${short(details.txid)}` : settlementStatusLabel(details.status)}</small></span></div>
-        <div class="settlement-progress-item ${stepClass(details.done, Boolean(details.txid) && !details.done)}"><i>3</i><span><b>${tr("TN10 链上确认", "TN10 confirmation")}</b><small>${details.done ? tr("奖池已释放至胜者钱包", "Prize released to winner wallet") : tr("自动刷新，无需手动操作", "Auto-refreshing; no action required")}</small></span></div>
+        <div class="settlement-progress-item ${stepClass(details.done, Boolean(details.txid) && !details.done)}"><i>3</i><span><b>${tr(`${networkShortName()} 链上确认`, `${networkShortName()} confirmation`)}</b><small>${details.done ? tr("奖池已释放至胜者钱包", "Prize released to winner wallet") : tr("自动刷新，无需手动操作", "Auto-refreshing; no action required")}</small></span></div>
       </div>
       <div class="data-grid settlement-data">
         <div class="data-cell"><div class="data-label">${tr("结算状态", "STATUS")}</div><div class="data-value ${details.done ? "good" : ""}" id="live-settlement-status">${settlementStatusLabel(details.status)}</div></div>
-        <div class="data-cell"><div class="data-label">${tr("释放金额", "RELEASED")}</div><div class="data-value good">${details.releasedKas || model.stakeKas * 2} TKAS</div></div>
+        <div class="data-cell"><div class="data-label">${tr("释放金额", "RELEASED")}</div><div class="data-value good">${details.releasedKas || model.stakeKas * 2} ${currencySymbol()}</div></div>
         ${details.covenantId ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Covenant ID</div><div class="data-value">${details.covenantId}</div></div>` : ""}
         ${details.txid ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Settlement TXID</div><div class="data-value">${details.txid}</div></div>` : ""}
       </div>
@@ -645,27 +851,17 @@ function renderSettlementModal() {
         ${kascovUrl ? `<a class="outline-button" href="${kascovUrl}" target="_blank" rel="noopener">${tr("在 Kascov 查看", "View on Kascov")} ↗</a>` : ""}
         ${txUrl ? `<a class="outline-button" href="${txUrl}" target="_blank" rel="noopener">${tr("查看结算交易", "View settlement transaction")} ↗</a>` : ""}
       </div>
-      <div class="modal-actions"><button class="outline-button" id="result-exit">${tr("返回大厅", "Return to lobby")}</button><button class="primary-button" id="result-rematch" ${details.done ? "" : "disabled"}>${details.done ? tr("再来一局", "Play again") : tr("结算完成后可重赛", "Rematch after settlement")}</button></div>
-      <div class="rematch-hint" id="rematch-hint">${tr("重赛需要双方确认，并为新一局重新锁仓。", "Both players must confirm and lock funds again for the new round.")}</div>`
+      <div class="modal-actions"><button class="outline-button" id="result-exit">${tr("退出房间", "Exit room")}</button><button class="primary-button" id="result-rematch" ${model.rematchRequested ? "disabled" : ""}>${model.rematchRequested ? tr("已确认 · 等待对手", "Confirmed · Waiting") : (details.done ? tr("再来一局", "Play again") : tr("预约下一局", "Reserve rematch"))}</button></div>
+      <div class="rematch-hint" id="rematch-hint">${details.done ? tr("双方确认后进入新一局，并重新锁仓。", "The next frame opens after both players confirm, then funds are locked again.") : tr("可以先确认重赛；结算完成且双方同意后，会自动进入新一局。", "You can confirm now. The next frame opens after settlement and both players agree.")}</div>`
   });
   $("#result-exit")?.addEventListener("click", () => { clearSettlementPolling(); closeModal(); leaveCurrentRoom(); });
-  $("#result-rematch")?.addEventListener("click", () => {
-    const button = $("#result-rematch");
-    button.disabled = true;
-    button.textContent = tr("等待对手确认…", "Waiting for opponent…");
-    socket.emit("game:rematch", { roomId }, (result) => {
-      if (!result?.ok) {
-        button.disabled = false;
-        button.textContent = tr("再来一局", "Play again");
-        showMessage(result?.error || tr("无法发起重赛", "Unable to request rematch"), "foul");
-      }
-    });
-  });
+  $("#result-rematch")?.addEventListener("click", requestRematch);
 }
 
 function updateSettlement(settlement) {
   if (settlement) model.settlement = settlement;
-  renderSettlementModal();
+  if ($("#modal").classList.contains("open") && $("#modal").dataset.kind === "settlement") renderSettlementModal();
+  renderPostMatchBar();
   const details = settlementDetails();
   const step = $("#step-settle");
   step.classList.toggle("pending", !details.done);
@@ -685,20 +881,23 @@ function startSettlementPolling() {
 }
 
 socket.on("game:finished", ({ winnerSeat, settlement, practiceMode, room }) => {
+  $("#concede-match").hidden = true;
   if (practiceMode || model.practiceMode) {
+    model.winnerSeat = winnerSeat;
+    if (room) model.currentRoom = room;
+    renderPostMatchBar();
     showMessage(tr("练习局完成", "Practice frame complete"), "score");
     openModal({ eyebrow: "PRACTICE COMPLETE · 练习结束", title: tr("练习局完成", "Practice frame complete"), body: `<div class="modal-note">${tr("本局为无押注单机练习，不产生任何链上交易。", "This was a free solo practice frame. No on-chain transaction was created.")}</div><div class="modal-actions"><button class="outline-button" id="practice-exit">${tr("返回大厅", "Return to lobby")}</button><button class="primary-button" id="practice-again">${tr("重新摆球", "Rack again")}</button></div>` });
-    $("#practice-again").addEventListener("click", () => socket.emit("practice:reset", { roomId }, (result) => {
-      if (!result?.ok) showMessage(result?.error || tr("无法重新摆球", "Unable to rack again"), "foul");
-      else closeModal();
-    }));
+    $("#practice-again").addEventListener("click", resetPracticeFrame);
     $("#practice-exit").addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
     return;
   }
   model.winnerSeat = winnerSeat;
+  model.rematchRequested = Boolean(room?.rematchSeats?.includes(model.liveSeat));
   model.settlement = settlement;
   if (room) model.currentRoom = room;
   showMessage(tr(`比赛结束 · Player ${winnerSeat + 1} 获胜`, `Frame complete · Player ${winnerSeat + 1} wins`), "score");
+  renderPostMatchBar();
   renderSettlementModal();
   if (!settlementDetails().done) startSettlementPolling();
 });
@@ -706,6 +905,9 @@ socket.on("game:settlement", ({ settlement }) => {
   updateSettlement(settlement);
 });
 socket.on("game:rematch-status", ({ seats, required }) => {
+  model.rematchRequested = seats.includes(model.liveSeat);
+  if (model.currentRoom) model.currentRoom.rematchSeats = seats;
+  renderPostMatchBar();
   const hint = $("#rematch-hint");
   if (hint) hint.textContent = tr(`已确认 ${seats.length}/${required} · 等待双方同意`, `${seats.length}/${required} confirmed · Waiting for both players`);
 });
@@ -714,6 +916,8 @@ socket.on("game:rematch-start", ({ room }) => {
   closeModal();
   model.settlement = null;
   model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   model.currentRoom = room;
   model.stakeKas = Number(room?.stakeKas || model.stakeKas);
   engine.reset();
@@ -726,6 +930,9 @@ socket.on("game:cue-placement", ({ placement }) => {
 });
 socket.on("game:reset", ({ snapshot, practiceMode }) => {
   if (snapshot) engine.importSnapshot(snapshot);
+  model.winnerSeat = null;
+  model.rematchRequested = false;
+  hidePostMatchBar();
   if (practiceMode) {
     model.practiceMode = true;
     $("#shot-clock").textContent = "∞";
@@ -897,8 +1104,13 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) }
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(payload.error || `HTTP ${response.status}`), { payload });
+  const errorMessage = model.language === "en" ? payload.errorEn || payload.error : payload.error;
+  if (!response.ok) throw Object.assign(new Error(errorMessage || `HTTP ${response.status}`), { payload });
   return payload;
+}
+
+function responseError(result, fallbackZh, fallbackEn) {
+  return (model.language === "en" ? result?.errorEn || result?.error : result?.error) || tr(fallbackZh, fallbackEn);
 }
 
 function socketRequest(event, payload, timeoutMs = 120000) {
@@ -913,58 +1125,142 @@ function socketRequest(event, payload, timeoutMs = 120000) {
 
 async function loadConfig() {
   try {
-    model.config = await api("/api/config");
+    const previousReady = model.config?.escrowReady;
+    const previousStake = Number($("#create-stake").value || model.stakeKas);
+    const serverConfig = await api("/api/config");
+    if (!serverConfig?.network?.id) throw new Error("Settlement service returned an invalid configuration");
+    model.config = { ...serverConfig, loaded: true };
     const network = model.config.network;
-    $("#network-name").textContent = `${network.id.toUpperCase()} · ${network.isTestnet ? "TESTNET" : "MAINNET"}`;
+    $("#network-name").textContent = network.isTestnet ? `${network.id.toUpperCase()} · TESTNET` : "MAINNET · LIVE";
+    $(".lobby-kicker").innerHTML = `<i class="network-dot"></i> KASPA ${network.id.toUpperCase()} · AUTOMATIC SETTLEMENT`;
     $("#pot-symbol").textContent = network.symbol;
-    $("#chain-mode").textContent = model.config.chainMode === "live" ? "TN10 LIVE" : "SETTLEMENT OFFLINE";
+    if (!model.practiceMode) $("#chain-mode").textContent = chainModeLabel();
+    const options = (model.config.stakeOptions || []).filter((value, index, values) => Number(value) > 0 && values.indexOf(value) === index);
+    if (options.length) {
+      const selectedStake = options.includes(previousStake) ? previousStake : options[Math.min(2, options.length - 1)];
+      $("#create-stake").innerHTML = options.map((value) => `<option value="${value}" ${value === selectedStake ? "selected" : ""}>${value} ${network.symbol} / ${tr("人", "player")}</option>`).join("");
+      model.stakeKas = Number($("#create-stake").value);
+    }
+    if (!network.isTestnet && !model.config.escrowReady) {
+      const funding = model.config.mainnetReadiness?.settlementFunding;
+      const fundingCode = funding?.code || "";
+      if (previousReady !== false || model.fundingCode !== fundingCode) {
+        showMessage(
+          fundingCode === "VERIFIER_FUNDING_REQUIRED"
+            ? tr(`结算钱包余额不足：需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO，到账后页面会自动启用锁仓`, `Settlement wallet needs one UTXO of at least ${funding.minimumUtxoKas} KAS. Escrow will enable automatically after funding.`)
+            : tr("主网安全配置或链上余额检查未通过，已禁止锁仓", "Mainnet safety or funding checks failed; escrow is disabled"),
+          "foul"
+        );
+      }
+      model.fundingCode = fundingCode;
+    } else if (!network.isTestnet && previousReady === false && model.config.escrowReady) {
+      model.fundingCode = "";
+      showMessage(tr("结算手续费已到账，主网锁仓已自动启用", "Settlement funding confirmed; mainnet escrow is now enabled"));
+    }
+    applyLanguage();
   } catch {
     showMessage(tr("结算服务暂未连接，游戏仍可离线试玩", "Settlement service is offline; local practice remains available"), "foul");
   }
 }
 loadConfig();
+setInterval(loadConfig, 15_000);
 
-function playersPayload() {
-  if (model.livePlayers.length === 2) {
-    return model.livePlayers.slice().sort((a, b) => a.seat - b.seat).map((player) => ({
-      address: player.address || "",
-      publicKey: player.publicKey || ""
-    }));
+function escrowApiPayload() {
+  return { roomId, playerId };
+}
+
+function localRoomPlayer() {
+  return model.currentRoom?.players?.find((item) => item.seat === model.liveSeat) || null;
+}
+
+function renderWalletIdentity() {
+  const button = $("#wallet");
+  button.classList.toggle("connected", Boolean(model.wallet));
+  button.textContent = model.wallet ? short(model.wallet.address, 6, 4) : tr("连接钱包", "Connect wallet");
+  $("#player-name").textContent = model.wallet ? "YOU" : tr("访客球手", "Guest player");
+  const boundAddress = localRoomPlayer()?.address || "";
+  $("#player-address").textContent = model.wallet
+    ? short(model.wallet.address)
+    : (boundAddress ? `${short(boundAddress)} · ${tr("钱包未连接", "Wallet disconnected")}` : tr("钱包未连接", "Wallet not connected"));
+  const step = $("#step-wallet");
+  step.querySelector(".step-state").textContent = model.wallet ? tr("已绑定", "Bound") : tr("重新连接", "Reconnect");
+  step.querySelector(".step-sub").textContent = model.wallet
+    ? `${model.wallet.provider} · ${tr("公钥", "Public key ")}${model.wallet.publicKey ? tr("已读取", "read") : tr("待授权", "permission needed")}`
+    : tr("账户或网络变化后需重新绑定", "Reconnect after an account or network change");
+}
+
+function invalidateWallet(message) {
+  model.wallet = null;
+  renderWalletIdentity();
+  if (message) showMessage(message, "foul");
+}
+
+function accountDecision(nextAddress) {
+  const player = localRoomPlayer();
+  return walletAccountDecision({
+    addressPrefix: model.config.network.addressPrefix,
+    boundAddress: player?.address || model.wallet?.address || "",
+    nextAddress,
+    identityFrozen: roomWalletIdentityFrozen(model.currentRoom, model.liveSeat)
+  });
+}
+
+async function bindKaswareAddress(address) {
+  let publicKey = "";
+  try { publicKey = await window.kasware.getPublicKey(); } catch { /* surfaced in escrow readiness */ }
+  model.wallet = { address, publicKey, provider: "Kasware" };
+  renderWalletIdentity();
+  if (model.currentRoom?.status === "waiting") {
+    const joined = await socketRequest("room:join", { roomId, ...identity() });
+    enterRoom(joined);
   }
-  return [
-    {
-      address: model.wallet?.address || "kaspatest:demo-player-one",
-      publicKey: model.wallet?.publicKey || demoKeys[0]
-    },
-    { address: model.opponent.address, publicKey: model.opponent.publicKey }
-  ];
 }
 
-function gamePayload(extra = {}) {
-  const state = engine.snapshot();
-  return {
-    roomId,
-    roundId,
-    stakeKas: model.stakeKas,
-    players: playersPayload(),
-    state: {
-      roundId,
-      scores: state.scores,
-      currentPlayer: state.currentPlayer,
-      redsRemaining: state.redsRemaining,
-      phase: state.phase,
-      target: state.target,
-      nominatedColor: state.nominatedColor,
-      breakScore: state.breakScore,
-      respottedBlack: Boolean(state.respottedBlack),
-      cueBallInHand: state.cueBallInHand,
-      cuePlacementConfirmed: state.cuePlacementConfirmed,
-      cuePlacements: state.cuePlacements,
-      moves: state.visits
-    },
-    ...extra
-  };
+async function handleWalletAccountsChanged(accounts = []) {
+  const decision = accountDecision(accounts?.[0]);
+  if (decision.action === "bind") {
+    await bindKaswareAddress(decision.address);
+    showMessage(tr("钱包账户已更新", "Wallet account updated"), "score");
+    return;
+  }
+  if (decision.action === "restore-bound-account") {
+    invalidateWallet(tr("锁仓身份已固定，请切回本局原钱包", "Escrow identity is frozen. Switch back to the wallet bound to this frame."));
+    return;
+  }
+  invalidateWallet(decision.action === "wrong-network"
+    ? tr(`钱包网络已变化，请切回 ${networkShortName()}`, `Wallet network changed. Switch back to ${networkShortName()}.`)
+    : tr("钱包已断开，请重新连接", "Wallet disconnected. Reconnect to continue."));
 }
+
+async function assertWalletStillBound() {
+  const wallet = window.kasware;
+  const accounts = await wallet?.getAccounts?.();
+  const decision = accountDecision(accounts?.[0]);
+  if (!model.wallet || decision.action !== "bind" || decision.address !== model.wallet.address) {
+    await handleWalletAccountsChanged(accounts || []);
+    throw new Error(tr("钱包身份刚刚发生变化，请确认账户后重新点击锁仓", "Wallet identity changed. Confirm the account and click lock again."));
+  }
+}
+
+let walletEventsRegistered = false;
+let walletSessionEnabled = false;
+function handleWalletEvent(accounts) {
+  if (!walletSessionEnabled) return;
+  void handleWalletAccountsChanged(accounts).catch((error) => {
+    invalidateWallet(error?.message || tr("钱包状态更新失败，请重新连接", "Wallet state update failed. Please reconnect."));
+  });
+}
+function registerWalletEvents() {
+  const wallet = window.kasware;
+  if (walletEventsRegistered || !wallet?.on) return;
+  walletEventsRegistered = true;
+  wallet.on("accountsChanged", handleWalletEvent);
+  wallet.on("networkChanged", () => {
+    void wallet.getAccounts().then(handleWalletEvent).catch(() => handleWalletEvent([]));
+  });
+}
+registerWalletEvents();
+window.addEventListener("load", registerWalletEvents, { once: true });
 
 async function connectWallet() {
   const button = $("#wallet");
@@ -979,22 +1275,19 @@ async function connectWallet() {
     if (wallet?.requestAccounts) {
       const accounts = await wallet.requestAccounts();
       const address = accounts?.[0];
-      let publicKey = "";
-      try { publicKey = await wallet.getPublicKey(); } catch { /* surfaced in escrow readiness */ }
-      model.wallet = { address, publicKey, provider: "Kasware" };
+      const decision = accountDecision(address);
+      if (decision.action !== "bind") {
+        throw new Error(tr(`钱包网络不匹配，请切换到 ${networkShortName()}`, `Wallet network mismatch. Switch to ${networkShortName()}.`));
+      }
+      walletSessionEnabled = true;
+      await bindKaswareAddress(decision.address);
+      registerWalletEvents();
     } else {
-      throw new Error(tr("未检测到 KasWare 钱包，请安装扩展并切换到 Kaspa TN10", "KasWare was not detected. Install the extension and switch to Kaspa TN10."));
+      throw new Error(tr(`未检测到 KasWare 钱包，请安装扩展并切换到 Kaspa ${networkShortName()}`, `KasWare was not detected. Install the extension and switch to Kaspa ${networkShortName()}.`));
     }
-    button.classList.add("connected");
-    button.textContent = short(model.wallet.address, 6, 4);
-    $("#player-name").textContent = model.wallet.provider === "Kasware" ? "YOU" : tr("访客球手", "Guest player");
-    $("#player-address").textContent = short(model.wallet.address);
-    $("#faucet-address").value = model.wallet.address;
-    if (model.currentRoom?.status === "waiting") joinRoom(roomId);
-    const step = $("#step-wallet");
-    step.querySelector(".step-state").textContent = tr("已绑定", "Bound");
-    step.querySelector(".step-sub").textContent = `${model.wallet.provider} · ${tr("公钥", "Public key ")}${model.wallet.publicKey ? tr("已读取", "read") : tr("待授权", "permission needed")}`;
+    renderWalletIdentity();
   } catch (error) {
+    if (!model.wallet) walletSessionEnabled = false;
     showMessage(error.message || tr("钱包连接已取消", "Wallet connection cancelled"), "foul");
     button.textContent = tr("连接钱包", "Connect wallet");
   } finally {
@@ -1002,7 +1295,23 @@ async function connectWallet() {
   }
 }
 
-function openModal({ eyebrow = "KASPA SNOOKER", title, body }) {
+async function disconnectWallet() {
+  if (!model.wallet) return;
+  walletSessionEnabled = false;
+  try {
+    if (typeof window.kasware?.disconnect === "function") await window.kasware.disconnect();
+  } catch {
+    // Older KasWare versions do not expose a revocable provider session.
+    // Clearing the dapp session still requires an explicit reconnect to sign.
+  }
+  model.wallet = null;
+  renderWalletIdentity();
+  closeModal();
+  showMessage(tr("钱包已从本页面断开", "Wallet disconnected from this page"), "score");
+}
+
+function openModal({ kind = "", eyebrow = "KASPA SNOOKER", title, body }) {
+  $("#modal").dataset.kind = kind;
   $("#modal-eyebrow").textContent = eyebrow;
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
@@ -1015,17 +1324,20 @@ $("#modal").addEventListener("click", (event) => { if (event.target === $("#moda
 window.addEventListener("keydown", (event) => { if (event.key === "Escape") closeModal(); });
 
 function showWalletModal() {
+  const identityFrozen = roomWalletIdentityFrozen(model.currentRoom, model.liveSeat);
   openModal({
     eyebrow: "PLAYER IDENTITY",
     title: tr("已连接钱包", "Wallet connected"),
-    body: `<div class="data-grid"><div class="data-cell"><div class="data-label">Provider</div><div class="data-value good">${model.wallet.provider}</div></div><div class="data-cell"><div class="data-label">Network</div><div class="data-value">${model.config.network.label}</div></div><div class="data-cell" style="grid-column:1/-1"><div class="data-label">Address</div><div class="data-value">${model.wallet.address}</div></div></div><div class="modal-note">${tr("钱包只用于签署 Covenant 托管交易。游戏不会接触助记词或私钥。", "The wallet only signs Covenant escrow transactions. The game never accesses seed phrases or private keys.")}</div>`
+    body: `<div class="data-grid"><div class="data-cell"><div class="data-label">Provider</div><div class="data-value good">${model.wallet.provider}</div></div><div class="data-cell"><div class="data-label">Network</div><div class="data-value">${model.config.network.label}</div></div><div class="data-cell" style="grid-column:1/-1"><div class="data-label">Address</div><div class="data-value">${model.wallet.address}</div></div></div><div class="modal-note">${tr("钱包只用于签署 Covenant 托管交易。游戏不会接触助记词或私钥。", "The wallet only signs Covenant escrow transactions. The game never accesses seed phrases or private keys.")}${identityFrozen ? `<br>${tr("断开钱包不会撤销本局已签名或已上链的锁仓与结算。", "Disconnecting does not cancel escrow or settlement already signed or recorded on-chain.")}` : ""}</div><div class="modal-actions"><button class="outline-button" id="keep-wallet-connected">${tr("保持连接", "Keep connected")}</button><button class="outline-button danger-button" id="disconnect-wallet">${tr("断开钱包", "Disconnect wallet")}</button></div>`
   });
+  $("#keep-wallet-connected").addEventListener("click", closeModal);
+  $("#disconnect-wallet").addEventListener("click", disconnectWallet);
 }
 
 async function showEscrow() {
-  openModal({ title: tr("正在生成托管方案…", "Generating escrow plan…"), body: `<div class="modal-note">${tr("SDK 正在把房间、双方公钥和押注金额转换为 TN10 Covenant intent。", "The SDK is converting the room, both public keys and stakes into a TN10 Covenant intent.")}</div>` });
+  openModal({ title: tr("正在生成托管方案…", "Generating escrow plan…"), body: `<div class="modal-note">${tr(`SDK 正在把房间、双方公钥和押注金额转换为 ${networkShortName()} Covenant intent。`, `The SDK is converting the room, both public keys and stakes into a ${networkShortName()} Covenant intent.`)}</div>` });
   try {
-    const payload = await api("/api/escrow/intent", { method: "POST", body: JSON.stringify(gamePayload()) });
+    const payload = await api("/api/escrow/intent", { method: "POST", body: JSON.stringify(escrowApiPayload()) });
     model.chain.intent = payload.intent;
     const intent = payload.intent;
     const statusMap = {
@@ -1063,9 +1375,9 @@ async function showEscrow() {
 async function buildDraft() {
   const action = $("#draft-action");
   action.disabled = true;
-  action.textContent = tr("查询 TN10 UTXO…", "Querying TN10 UTXOs…");
+  action.textContent = tr(`查询 ${networkShortName()} UTXO…`, `Querying ${networkShortName()} UTXOs…`);
   try {
-    const payload = await api("/api/escrow/draft", { method: "POST", body: JSON.stringify(gamePayload()) });
+    const payload = await api("/api/escrow/draft", { method: "POST", body: JSON.stringify(escrowApiPayload()) });
     const draft = payload.draft;
     $("#modal-body").innerHTML = `<div class="data-grid"><div class="data-cell"><div class="data-label">Covenant ID</div><div class="data-value good">${draft.covenantId}</div></div><div class="data-cell"><div class="data-label">Draft Status</div><div class="data-value">${draft.status}</div></div></div><div class="modal-note">${tr("签名草案已构建。下一步由双方钱包分别签署各自输入，再广播锁定交易。", "Signing draft built. Each wallet now signs its own input before the lock transaction is broadcast.")}</div>`;
   } catch (error) {
@@ -1080,14 +1392,14 @@ function showSettings() {
       <div class="settings-row"><div><div class="settings-name">${tr("练习模式", "Practice mode")}</div><div class="settings-help">${tr("无钱包、无押注、无链上结算", "No wallet, stake or settlement")}</div></div><strong>FREE PLAY</strong></div>
       <div class="settings-row"><div><div class="settings-name">${tr("重新摆球", "Rack again")}</div><div class="settings-help">${tr("清空当前比分并重新开始练习", "Clear scores and restart practice")}</div></div><button class="outline-button" id="practice-reset" style="width:auto;margin:0;padding:0 12px">${tr("重新摆球", "Rack again")}</button></div>
       <div class="settings-row"><div><div class="settings-name">${tr("退出练习", "Exit practice")}</div><div class="settings-help">${tr("关闭练习房间并返回游戏大厅", "Close the practice room and return to the lobby")}</div></div><button class="outline-button" id="practice-leave" style="width:auto;margin:0;padding:0 12px">${tr("返回大厅", "Return to lobby")}</button></div>` : `
-      <div class="settings-row"><div><div class="settings-name">${tr("本局押注", "Frame stake")}</div><div class="settings-help">${tr("创建房间后不可修改，避免与链上锁仓金额不一致", "Cannot be changed after room creation")}</div></div><strong>${model.currentRoom?.stakeKas || model.stakeKas} TKAS / ${tr("人", "player")}</strong></div>`;
+      <div class="settings-row"><div><div class="settings-name">${tr("本局押注", "Frame stake")}</div><div class="settings-help">${tr("创建房间后不可修改，避免与链上锁仓金额不一致", "Cannot be changed after room creation")}</div></div><strong>${model.currentRoom?.stakeKas || model.stakeKas} ${currencySymbol()} / ${tr("人", "player")}</strong></div>`;
   openModal({
     eyebrow: "GAME SETTINGS · 游戏设置",
     title: tr("对局设置", "Game settings"),
     body: `
       <div class="settings-row"><div><div class="settings-name">${tr("声音", "Sound")}</div><div class="settings-help">${tr("击球、碰球、落袋和犯规提示音", "Shots, collisions, pots and foul cues")}</div></div><button class="outline-button" id="toggle-sound" style="width:auto;margin:0;padding:0 12px">${model.muted ? tr("开启", "Enable") : tr("关闭", "Disable")}</button></div>
       ${practiceRows}
-      <div class="modal-note">${model.practiceMode ? tr("练习模式仍使用完整斯诺克规则，但你可以操作每一个回合。", "Practice uses the full rules, but you control every turn.") : tr("比赛开始后不能单方面重置、改分或手动指定赢家。超时、犯规、胜负和结算全部由服务端权威规则状态机处理。", "After the match starts, scores and winners cannot be changed manually. The authoritative server handles timeouts, fouls, results and settlement.")}</div>`
+      <div class="modal-note">${model.practiceMode ? tr("练习模式仍使用完整斯诺克规则，但你可以操作每一个回合。", "Practice uses the full rules, but you control every turn.") : tr("比赛开始后不能单方面重置、改分或手动指定赢家。超时、犯规、认输、胜负和结算全部由服务端权威规则状态机处理。", "After the match starts, scores and winners cannot be changed manually. The authoritative server handles timeouts, fouls, concessions, results and settlement.")}</div>`
   });
   $("#toggle-sound").addEventListener("click", () => {
     model.muted = !model.muted;
@@ -1101,17 +1413,75 @@ function showSettings() {
   $("#practice-leave")?.addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
 }
 
-function leaveCurrentRoom() {
+function confirmConcession() {
+  if (model.practiceMode || model.currentRoom?.status !== "playing" || !Number.isInteger(model.liveSeat)) return;
+  openModal({
+    kind: "concession",
+    eyebrow: "CONCEDE FRAME · 认输",
+    title: tr("确认认输？", "Concede this frame?"),
+    body: `<div class="modal-note">${tr("确认后，对手将立即成为本局胜者，锁仓奖池会按照服务端权威记录自动结算。此操作无法撤销。", "Your opponent will immediately win the frame and the locked prize will settle from the authoritative server record. This cannot be undone.")}</div><div class="modal-actions"><button class="outline-button" id="cancel-concession">${tr("继续比赛", "Keep playing")}</button><button class="primary-button danger-button" id="confirm-concession">${tr("确认认输", "Confirm concession")}</button></div>`
+  });
+  $("#cancel-concession").addEventListener("click", closeModal);
+  $("#confirm-concession").addEventListener("click", async () => {
+    const button = $("#confirm-concession");
+    button.disabled = true;
+    button.textContent = tr("正在提交…", "Submitting…");
+    try {
+      const result = await socketRequest("game:concede", { roomId });
+      if (!result?.ok) throw new Error(responseError(result, "无法认输", "Unable to concede"));
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = tr("确认认输", "Confirm concession");
+      showMessage(error.message || tr("认输失败", "Concession failed"), "foul");
+    }
+  });
+}
+
+function leaveCurrentRoom(options = {}) {
   clearInterval(clockTimer);
   clearSettlementPolling();
-  socket.emit("room:leave", { roomId }, () => {
+  const finish = () => {
     roomId = "";
     model.currentRoom = null;
     model.liveSeat = null;
     model.livePlayers = [];
     model.practiceMode = false;
+    model.settlement = null;
+    model.winnerSeat = null;
+    model.rematchRequested = false;
+    hidePostMatchBar();
     history.replaceState({}, "", location.pathname);
     showView("lobby");
+  };
+  if (options.notifyServer === false || !roomId) finish();
+  else socket.emit("room:leave", { roomId }, finish);
+}
+
+function requestRoomExit() {
+  const committed = roomWalletIdentityFrozen(model.currentRoom, model.liveSeat) && !model.currentRoom?.escrow?.recoverable;
+  if (!committed) {
+    leaveCurrentRoom();
+    return;
+  }
+  openModal({
+    kind: "room-exit",
+    eyebrow: "EXIT ROOM · 退出房间",
+    title: tr("仍要退出当前房间？", "Exit this room anyway?"),
+    body: `<div class="modal-note settlement-error">${tr("本房间已经生成或提交锁仓数据。退出只会离开当前页面，不会撤销钱包签名、链上锁仓或后续结算；你仍可通过房间链接重新进入。", "This room already has escrow data. Exiting only leaves this page; it does not cancel wallet signatures, on-chain escrow, or settlement. You can rejoin with the room link.")}</div><div class="modal-actions"><button class="outline-button" id="cancel-room-exit">${tr("留在房间", "Stay in room")}</button><button class="outline-button danger-button" id="confirm-room-exit">${tr("仍然退出", "Exit anyway")}</button></div>`
+  });
+  $("#cancel-room-exit").addEventListener("click", closeModal);
+  $("#confirm-room-exit").addEventListener("click", () => {
+    closeModal();
+    leaveCurrentRoom();
+  });
+}
+
+function abandonFailedLockRoom() {
+  const current = roomId;
+  socket.emit("room:lock:abandon", { roomId: current }, (result) => {
+    if (!result?.ok) return showMessage(result?.error || tr("无法关闭失败房间", "Unable to close failed room"), "foul");
+    showMessage(tr("失败房间已关闭，请用新的押注档位重新创建", "Failed room closed. Create a new match with a valid stake."), "score");
+    leaveCurrentRoom({ notifyServer: false });
   });
 }
 
@@ -1121,6 +1491,7 @@ $("#language-toggle").addEventListener("click", () => {
   applyLanguage();
 });
 $("#wallet").addEventListener("click", connectWallet);
+$("#concede-match").addEventListener("click", confirmConcession);
 $("#create-room").addEventListener("click", () => {
   gameAudio.unlock();
   socket.emit("room:create", { ...identity(), stakeKas: Number($("#create-stake").value) }, enterRoom);
@@ -1143,6 +1514,10 @@ $("#practice-match").addEventListener("click", () => {
 });
 $("#lock-stake").addEventListener("click", async () => {
   gameAudio.unlock();
+  if (model.currentRoom?.escrow?.status === "lock-broadcast-failed" && model.currentRoom?.escrow?.recoverable) {
+    abandonFailedLockRoom();
+    return;
+  }
   if (!model.wallet) {
     await connectWallet();
     if (!model.wallet) return;
@@ -1151,8 +1526,9 @@ $("#lock-stake").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = tr("正在构建双方锁仓交易…", "Building two-party escrow…");
   try {
+    await assertWalletStillBound();
     const prepared = await socketRequest("room:lock", { roomId });
-    if (!prepared.ok) throw new Error(prepared.error || tr("锁仓草案创建失败", "Failed to create escrow draft"));
+    if (!prepared.ok) throw new Error(responseError(prepared, "锁仓草案创建失败", "Failed to create escrow draft"));
     if (prepared.status === "locked-on-chain") {
       showMessage(tr("锁仓交易已经上链", "Escrow transaction is on-chain"), "score");
       return;
@@ -1162,7 +1538,7 @@ $("#lock-stake").addEventListener("click", async () => {
       return;
     }
     if (prepared.status === "confirming-lock-on-chain") {
-      showMessage(tr("锁仓交易已广播，正在等待 TN10 确认", "Escrow broadcast; waiting for TN10 confirmation"), "score");
+      showMessage(tr(`锁仓交易已广播，正在等待 ${networkShortName()} 确认`, `Escrow broadcast; waiting for ${networkShortName()} confirmation`), "score");
       return;
     }
     if (prepared.status !== "signature-required" || !prepared.signing) throw new Error(tr("服务没有返回钱包签名草案", "Server did not return a wallet signing draft"));
@@ -1179,9 +1555,10 @@ $("#lock-stake").addEventListener("click", async () => {
       : signedResult?.signedTransactionSafeJson || signedResult?.txJsonString || "";
     button.textContent = tr("正在合并签名并广播…", "Merging signatures and broadcasting…");
     const submitted = await socketRequest("room:lock:submit", { roomId, signedTransactionSafeJson });
-    if (!submitted.ok) throw new Error(submitted.error || tr("签名提交失败", "Signature submission failed"));
-    if (submitted.status === "locked-on-chain") showMessage(tr("双方押金已在 TN10 上锁定", "Both stakes are locked on TN10"), "score");
+    if (!submitted.ok) throw new Error(responseError(submitted, "签名提交失败", "Signature submission failed"));
+    if (submitted.status === "locked-on-chain") showMessage(tr(`双方押金已在 ${networkShortName()} 上锁定`, `Both stakes are locked on ${networkShortName()}`), "score");
     else if (submitted.status === "confirming-lock-on-chain") showMessage(tr("锁仓交易已广播，等待链上确认", "Escrow broadcast; waiting for confirmation"), "score");
+    else if (submitted.status === "lock-broadcast-failed") throw new Error(model.language === "en" ? submitted.escrow?.errorEn || submitted.escrow?.error || "Escrow lock failed" : submitted.escrow?.error || "锁仓交易广播失败");
     else showMessage(tr("签名已提交，等待对手签名后自动广播", "Signature submitted; broadcast starts after opponent signs"), "score");
   } catch (error) {
     socket.emit("room:lock:cancel", { roomId });
@@ -1190,47 +1567,22 @@ $("#lock-stake").addEventListener("click", async () => {
     const local = model.currentRoom?.players?.find((item) => item.seat === model.liveSeat);
     if (!local?.locked && local?.lockStatus !== "signed") {
       button.disabled = false;
-      button.textContent = `${tr("签名并锁定", "Sign and lock")} ${model.currentRoom?.stakeKas || model.stakeKas} TKAS`;
+      button.textContent = `${tr("签名并锁定", "Sign and lock")} ${model.currentRoom?.stakeKas || model.stakeKas} ${currencySymbol()}`;
     }
   }
 });
 $("#ready-match").addEventListener("click", () => socket.emit("room:ready", { roomId }, (result) => {
   if (!result?.ok) showMessage(result?.error || tr("无法准备", "Unable to ready up"), "foul");
 }));
-$("#back-lobby").addEventListener("click", leaveCurrentRoom);
-
-async function loadFaucet() {
-  try {
-    const info = await api("/api/faucet");
-    model.faucet = info;
-    $("#faucet-status").textContent = info.balanceKas === null ? `${tr("资金地址：", "Funding address: ")}${short(info.address)}` : `${tr("余额", "Balance")} ${Number(info.balanceKas).toFixed(2)} TKAS · ${short(info.address)}`;
-  } catch (error) {
-    $("#faucet-status").textContent = error.message || tr("水龙头暂不可用", "Faucet unavailable");
-  }
-}
-
-$("#claim-faucet").addEventListener("click", async () => {
-  const button = $("#claim-faucet");
-  button.disabled = true;
-  button.textContent = tr("发送中…", "Sending…");
-  try {
-    const result = await api("/api/faucet/claim", {
-      method: "POST",
-      body: JSON.stringify({ address: $("#faucet-address").value.trim(), amountKas: Number($("#faucet-amount").value) })
-    });
-    $("#faucet-status").textContent = `${tr("已发送", "Sent")} ${result.claim.amountKas} TKAS · ${short(result.claim.txids.at(-1) || "")}`;
-    showMessage(tr("测试币已发送到钱包", "Testnet funds sent to wallet"), "score");
-  } catch (error) {
-    $("#faucet-status").textContent = error.message || tr("领取失败", "Claim failed");
-    showMessage(error.message || tr("领取失败", "Claim failed"), "foul");
-  } finally {
-    button.disabled = false;
-    button.textContent = tr("领取到钱包", "Claim to wallet");
-  }
+$("#back-lobby").addEventListener("click", requestRoomExit);
+$("#leave-room").addEventListener("click", requestRoomExit);
+$("#post-match-exit").addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
+$("#post-match-rematch").addEventListener("click", () => {
+  if (model.practiceMode) resetPracticeFrame();
+  else requestRematch();
 });
 
 showView("lobby");
-loadFaucet();
 $("#escrow-action").addEventListener("click", showEscrow);
 $("#settings").addEventListener("click", showSettings);
 $("#copy-room").addEventListener("click", async () => {
@@ -1238,3 +1590,4 @@ $("#copy-room").addEventListener("click", async () => {
   await navigator.clipboard?.writeText(shareUrl);
   showMessage(tr(`房间链接 ${roomId} 已复制`, `Room link ${roomId} copied`), "score");
 });
+socket.connect();

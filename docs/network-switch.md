@@ -29,6 +29,13 @@ Mainnet uses the same SDK API, but it is guarded because it spends real KAS.
 const kit = new KaspaCovenantGameKit({
   networkId: "mainnet",
   allowMainnet: true,
+  // Enable only after reviewing and pinning the generated escrow program profile.
+  mainnetProgramProfileApproved: true,
+  mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
+  silvercBin: process.env.SILVERC_BIN,
+  silvercExpectedSha256: process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256,
+  // Closed mainnet testing defaults to at most 1 KAS per player.
+  mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
 });
@@ -39,6 +46,11 @@ Environment version:
 ```bash
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
+KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
+KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<reviewed-profile-fingerprint>
+SILVERC_BIN=/absolute/path/to/silverc
+KASPA_COVENANT_MAINNET_SILVERC_SHA256=<reviewed-compiler-sha256>
 ```
 
 ## Runtime Switch
@@ -69,8 +81,8 @@ explicit so game projects do not mix networks:
 
 | SDK `networkId` | Kaspa network id | Kascov CLI network | Kascov Explorer base |
 | --- | --- | --- | --- |
-| `tn10` | `testnet-10` | `testnet-10` | `https://kascov-explorer.web.app/testnet-10` |
-| `mainnet` | `mainnet` | `mainnet` | `https://kascov-explorer.web.app/mainnet` |
+| `tn10` | `testnet-10` | `testnet-10` | `https://kascov.io/share/testnet-10` |
+| `mainnet` | `mainnet` | `mainnet` | `https://kascov.io/share/mainnet` |
 
 ```js
 const { kascovTraceCommand } = require("kaspa-covenant-game-kit");
@@ -92,7 +104,7 @@ KASPA_TN10_REST_API=https://api-tn10.kaspa.org
 KASPA_TN10_KASCOV_NETWORK=testnet-10
 KASPA_MAINNET_REST_API=https://api.kaspa.org
 KASPA_MAINNET_KASCOV_NETWORK=mainnet
-KASPA_MAINNET_KASCOV_EXPLORER=https://kascov-explorer.web.app/mainnet
+KASPA_MAINNET_KASCOV_EXPLORER=https://kascov.io/share/mainnet
 ```
 
 ## Production Checklist
@@ -104,3 +116,16 @@ Before enabling mainnet in a user-facing app:
 - test with tiny KAS amounts first;
 - keep timeout and refund paths visible to users;
 - run independent review for contract bytecode and settlement behavior.
+
+`allowMainnet` only unlocks the network configuration. Draft construction has a
+second guard, `mainnetProgramProfileApproved`, requires the exact current
+`mainnetProgramProfileFingerprint`, and the SDK enforces a hard closed-test cap
+of 1 KAS per player. Mainnet also requires a hash-pinned official `silverc`
+binary. Every instance is compiled from `contracts/escrow.sil` and compared
+byte-for-byte with the deterministic generator before a wallet draft is built.
+
+Set `SILVERC_BIN` and `KASPA_COVENANT_MAINNET_SILVERC_SHA256`, then run
+`node examples/program-profile.js` to print the source-linked manifest. Review
+and record the compiler, source, generator hashes and parameters before copying
+its fingerprint into a mainnet environment. Any compiler, source or generator
+change invalidates the previous approval.

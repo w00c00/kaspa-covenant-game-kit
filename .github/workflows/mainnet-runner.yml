@@ -1,0 +1,68 @@
+name: Mainnet artifacts build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/build-mainnet-runner.sh"
+      - "scripts/build-silverc.sh"
+      - "tools/kascov-mainnet-runner/**"
+      - ".github/workflows/mainnet-runner.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: kascov-mainnet-runner
+      - name: Build and test pinned runner
+        run: scripts/build-mainnet-runner.sh "$RUNNER_OUT"
+        env:
+          RUNNER_OUT: ${{ runner.temp }}/kascov-lab-mainnet-linux-x64
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/kascov-mainnet
+      - name: Record artifact hash
+        run: sha256sum "$RUNNER_OUT" | tee "$RUNNER_OUT.sha256"
+        env:
+          RUNNER_OUT: ${{ runner.temp }}/kascov-lab-mainnet-linux-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kascov-lab-mainnet-linux-x64
+          path: |
+            ${{ runner.temp }}/kascov-lab-mainnet-linux-x64
+            ${{ runner.temp }}/kascov-lab-mainnet-linux-x64.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  silverc-linux-x64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: official-silverc
+      - name: Build pinned official compiler
+        run: scripts/build-silverc.sh "$SILVERC_OUT"
+        env:
+          SILVERC_OUT: ${{ runner.temp }}/silverc-linux-x64
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/silverc
+      - name: Record artifact hash
+        run: sha256sum "$SILVERC_OUT" | tee "$SILVERC_OUT.sha256"
+        env:
+          SILVERC_OUT: ${{ runner.temp }}/silverc-linux-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: silverc-linux-x64
+          path: |
+            ${{ runner.temp }}/silverc-linux-x64
+            ${{ runner.temp }}/silverc-linux-x64.sha256
+          if-no-files-found: error
+          retention-days: 14

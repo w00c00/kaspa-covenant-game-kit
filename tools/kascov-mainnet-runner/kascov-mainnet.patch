@@ -1,0 +1,311 @@
+diff --git a/crates/kascov-lab/src/main.rs b/crates/kascov-lab/src/main.rs
+index bd4c8a9..5a82088 100644
+--- a/crates/kascov-lab/src/main.rs
++++ b/crates/kascov-lab/src/main.rs
+@@ -11,8 +11,8 @@ use clap::{Parser, Subcommand};
+ #[derive(Parser)]
+ #[command(
+     name = "kascov-lab",
+-    about = "Covenant lab: create real covenants on testnet-10",
+-    long_about = "Covenant lab: create real covenants on testnet-10.
++    about = "Covenant lab: create covenants on TN10 and settle reviewed escrows on mainnet",
++    long_about = "Covenant lab: create covenants on testnet-10 and settle reviewed escrows on mainnet.
+
+ NEW HERE? one command does the whole loop — deploy a contract and watch
+ it run itself on-chain:
+@@ -122,6 +122,12 @@ enum Command {
+         /// Which covenant to settle, when several share this program
+         #[arg(long)]
+         covenant: Option<String>,
++        /// Settlement network: tn10 | mainnet. Other lab commands remain TN10-only.
++        #[arg(long, default_value = "tn10")]
++        network: String,
++        /// Durable broadcast journal written before submitting the deterministic transaction.
++        #[arg(long)]
++        journal: Option<PathBuf>,
+         /// Don't broadcast — simulate the settlement through the script engine.
+         #[arg(long)]
+         dry_run: bool,
+@@ -164,11 +170,14 @@ async fn main() -> Result<()> {
+             let client = kascov_labkit::connect(cli.rpc.as_deref()).await?;
+             kascov_labkit::contract_demo(&client, &keypair, &cli.key, value).await
+         }
+-        Command::SettleEscrow { ref program_hex, ref release_to, ref covenant, dry_run } => {
++        Command::SettleEscrow { ref program_hex, ref release_to, ref covenant, ref network, ref journal, dry_run } => {
+             let program = hex::decode(program_hex.trim()).context("--program-hex is not valid hex")?;
+             let keypair = kascov_labkit::load_or_create_key(&cli.key, false)?;
+-            let client = kascov_labkit::connect(cli.rpc.as_deref()).await?;
+-            kascov_labkit::settle_escrow(&client, &keypair, &program, release_to, covenant.as_deref(), dry_run).await
++            let network = kascov_labkit::LabNetwork::parse(network)?;
++            let client = kascov_labkit::connect_network(cli.rpc.as_deref(), network).await?;
++            kascov_labkit::settle_escrow_on_network(
++                &client, &keypair, &program, release_to, covenant.as_deref(), dry_run, network, journal.as_deref(),
++            ).await
+         }
+         Command::EscrowDemo { value } => {
+             let keypair = kascov_labkit::load_or_create_key(&cli.key, true)?;
+diff --git a/crates/kascov-labkit/src/lib.rs b/crates/kascov-labkit/src/lib.rs
+index ab4abe7..1df99fb 100644
+--- a/crates/kascov-labkit/src/lib.rs
++++ b/crates/kascov-labkit/src/lib.rs
+@@ -9,6 +9,7 @@
+
+ use std::path::Path;
+ use std::time::Duration;
++use std::io::Write;
+
+ use anyhow::{bail, Context, Result};
+ use kaspa_addresses::{Address, Prefix, Version as AddrVersion};
+@@ -40,6 +41,50 @@ use secp256k1::{Keypair, SECP256K1};
+
+ pub const FEE: u64 = 500_000; // 0.005 KAS per tx — TN10's post-Toccata minimum relay fee is ~0.00166 for 1-in-1-out
+
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum LabNetwork {
++    Tn10,
++    Mainnet,
++}
++
++impl LabNetwork {
++    pub fn parse(value: &str) -> Result<Self> {
++        match value.trim().to_ascii_lowercase().as_str() {
++            "tn10" | "testnet-10" | "testnet10" => Ok(Self::Tn10),
++            "mainnet" | "kaspa" | "kaspa-mainnet" => Ok(Self::Mainnet),
++            other => bail!("unsupported network {other}; use tn10 or mainnet"),
++        }
++    }
++
++    fn network_id(self) -> NetworkId {
++        match self {
++            Self::Tn10 => NetworkId::with_suffix(NetworkType::Testnet, 10),
++            Self::Mainnet => NetworkId::new(NetworkType::Mainnet),
++        }
++    }
++
++    fn prefix(self) -> Prefix {
++        match self {
++            Self::Tn10 => Prefix::Testnet,
++            Self::Mainnet => Prefix::Mainnet,
++        }
++    }
++
++    fn symbol(self) -> &'static str {
++        match self {
++            Self::Tn10 => "TKAS",
++            Self::Mainnet => "KAS",
++        }
++    }
++
++    fn explorer_path(self) -> &'static str {
++        match self {
++            Self::Tn10 => "testnet-10",
++            Self::Mainnet => "mainnet",
++        }
++    }
++}
++
+ /// Dry-run one input of a built transaction through the real Kaspa script
+ /// engine — the exact validation a node performs — WITHOUT broadcasting.
+ /// Returns (passed, human verdict). This is "what-if spend": test a covenant
+@@ -182,8 +227,12 @@ pub fn keypair_from_hex(hex_key: &str) -> Result<Keypair> {
+ }
+
+ pub fn address_of(keypair: &Keypair) -> Address {
++    address_of_network(keypair, LabNetwork::Tn10)
++}
++
++pub fn address_of_network(keypair: &Keypair, network: LabNetwork) -> Address {
+     let (xonly, _) = keypair.public_key().x_only_public_key();
+-    Address::new(Prefix::Testnet, AddrVersion::PubKey, &xonly.serialize())
++    Address::new(network.prefix(), AddrVersion::PubKey, &xonly.serialize())
+ }
+
+ /// Generate a keypair (if none exists) and print the TN10 address + key fields.
+@@ -206,7 +255,11 @@ pub fn keygen(path: &Path) -> Result<()> {
+ /// Connect a borsh wRPC client to testnet-10. `rpc` is an explicit node url;
+ /// `None` uses the public resolver.
+ pub async fn connect(rpc: Option<&str>) -> Result<KaspaRpcClient> {
+-    let network_id = NetworkId::with_suffix(NetworkType::Testnet, 10);
++    connect_network(rpc, LabNetwork::Tn10).await
++}
++
++pub async fn connect_network(rpc: Option<&str>, network: LabNetwork) -> Result<KaspaRpcClient> {
++    let network_id = network.network_id();
+     let resolver = rpc.is_none().then(Resolver::default);
+     let client = KaspaRpcClient::new(WrpcEncoding::Borsh, rpc, resolver, Some(network_id), None)?;
+     client
+@@ -217,6 +270,10 @@ pub async fn connect(rpc: Option<&str>) -> Result<KaspaRpcClient> {
+             ..Default::default()
+         }))
+         .await?;
++    let info = client.get_server_info().await?;
++    if info.network_id != network_id {
++        bail!("connected node reports {}, expected {}", info.network_id, network_id);
++    }
+     Ok(client)
+ }
+
+@@ -428,6 +485,19 @@ pub async fn settle_escrow(
+     release_to: &str,
+     target_covenant: Option<&str>,
+     dry_run: bool,
++) -> Result<()> {
++    settle_escrow_on_network(client, keypair, program, release_to, target_covenant, dry_run, LabNetwork::Tn10, None).await
++}
++
++pub async fn settle_escrow_on_network(
++    client: &KaspaRpcClient,
++    keypair: &Keypair,
++    program: &[u8],
++    release_to: &str,
++    target_covenant: Option<&str>,
++    dry_run: bool,
++    network: LabNetwork,
++    journal: Option<&Path>,
+ ) -> Result<()> {
+     let target_covenant = parse_covenant(target_covenant)?;
+     let decoded = kascov_decode::Registry::default().decode(0, program);
+@@ -456,12 +526,12 @@ pub async fn settle_escrow(
+         "seller" => seller_pk,
+         other => bail!("--release-to must be buyer or seller, not {other}"),
+     };
+-    let recipient_addr = Address::new(Prefix::Testnet, AddrVersion::PubKey, &recipient_pk);
++    let recipient_addr = Address::new(network.prefix(), AddrVersion::PubKey, &recipient_pk);
+     let recipient_spk = pay_to_address_script(&recipient_addr);
+
+     // The escrow state UTXO…
+     let spk = p2sh_spk(program);
+-    let p2sh_addr = extract_script_pub_key_address(&spk, Prefix::Testnet)
++    let p2sh_addr = extract_script_pub_key_address(&spk, network.prefix())
+         .map_err(|e| anyhow::anyhow!("cannot derive P2SH address: {e:?}"))?;
+     let states = client.get_utxos_by_addresses(vec![p2sh_addr.clone().into()]).await?;
+     let state = match target_covenant {
+@@ -471,7 +541,7 @@ pub async fn settle_escrow(
+     .with_context(|| format!("no live escrow state at {p2sh_addr}"))?;
+
+     // …and a plain UTXO of ours to pay the real network fee.
+-    let my_addr = address_of(keypair);
++    let my_addr = address_of_network(keypair, network);
+     let mine = client.get_utxos_by_addresses(vec![my_addr.clone().into()]).await?;
+     // escrow input ≈ 100k script units (2 P2PK rebuilds + introspection);
+     // the fee input runs its own p2pk checksig (~100k) — both need real budget.
+@@ -554,16 +624,76 @@ pub async fn settle_escrow(
+         let (pass, verdict) = simulate_input(&mtx, 0);
+         println!("SIMULATE   Escrow → {release_to}  (not broadcast)");
+         println!("           {}  {verdict}", if pass { "✓ PASS —" } else { "✗ FAIL —" });
+-        println!("           would release {:.8} TKAS to the {release_to}", (state_value - 1000) as f64 / 1e8);
++        println!("           would release {:.8} {} to the {release_to}", (state_value - 1000) as f64 / 1e8, network.symbol());
+         return Ok(());
+     }
++    let planned_txid = mtx.tx.id().to_string();
++    if let Some(path) = journal {
++        write_settlement_journal(
++            path,
++            network,
++            covenant_id_opt.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
++            release_to,
++            &planned_txid,
++            state_value - 1000,
++            "prepared",
++        )?;
++    }
+     let txid = submit(client, &mtx.tx).await?;
+-    println!("SETTLED    Escrow → {release_to} ({:.8} TKAS released)", (state_value - 1000) as f64 / 1e8);
++    if txid != planned_txid {
++        bail!("submitted transaction id {txid} differs from locally committed id {planned_txid}");
++    }
++    if let Some(path) = journal {
++        write_settlement_journal(
++            path,
++            network,
++            covenant_id_opt.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
++            release_to,
++            &txid,
++            state_value - 1000,
++            "submitted",
++        )?;
++    }
++    println!("SETTLED    Escrow → {release_to} ({:.8} {} released)", (state_value - 1000) as f64 / 1e8, network.symbol());
+     println!("           tx {txid}");
+     if let Some(id) = covenant_id_opt {
+         println!();
+         println!("the escrow revealed itself on-chain. watch the story:");
+-        println!("  https://kascov.io/testnet-10/c/{id}");
++        println!("  https://kascov.io/{}/c/{id}", network.explorer_path());
++    }
++    Ok(())
++}
++
++fn write_settlement_journal(
++    path: &Path,
++    network: LabNetwork,
++    covenant_id: &str,
++    release_to: &str,
++    txid: &str,
++    released_sompi: u64,
++    status: &str,
++) -> Result<()> {
++    let parent = path.parent().filter(|value| !value.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
++    std::fs::create_dir_all(parent).with_context(|| format!("cannot create journal directory {}", parent.display()))?;
++    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(&temporary)
++        .with_context(|| format!("cannot create settlement journal {}", temporary.display()))?;
++    writeln!(file, "version=1")?;
++    writeln!(file, "network={}", network.explorer_path())?;
++    writeln!(file, "covenant_id={covenant_id}")?;
++    writeln!(file, "release_to={release_to}")?;
++    writeln!(file, "txid={txid}")?;
++    writeln!(file, "released_sompi={released_sompi}")?;
++    writeln!(file, "status={status}")?;
++    file.sync_all()?;
++    drop(file);
++    std::fs::rename(&temporary, path)
++        .with_context(|| format!("cannot commit settlement journal {}", path.display()))?;
++    if let Ok(directory) = std::fs::File::open(parent) {
++        let _ = directory.sync_all();
+     }
+     Ok(())
+ }
+@@ -1135,6 +1265,39 @@ mod tests {
+         }
+     }
+
++    #[test]
++    fn lab_network_mapping_never_falls_back_to_tn10() {
++        let key = kp(7);
++        assert_eq!(LabNetwork::parse("tn10").unwrap(), LabNetwork::Tn10);
++        assert_eq!(LabNetwork::parse("mainnet").unwrap(), LabNetwork::Mainnet);
++        assert!(LabNetwork::parse("testnet-11").is_err());
++        assert_eq!(LabNetwork::Tn10.network_id().to_string(), "testnet-10");
++        assert_eq!(LabNetwork::Mainnet.network_id().to_string(), "mainnet");
++        assert!(address_of_network(&key, LabNetwork::Tn10).to_string().starts_with("kaspatest:"));
++        assert!(address_of_network(&key, LabNetwork::Mainnet).to_string().starts_with("kaspa:"));
++    }
++
++    #[test]
++    fn settlement_journal_commits_the_planned_transaction_before_broadcast() {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let directory = std::env::temp_dir().join(format!("kascov-journal-{}-{unique}", std::process::id()));
++        let journal = directory.join("settlement.journal");
++        let covenant_id = "11".repeat(32);
++        let txid = "22".repeat(32);
++        write_settlement_journal(&journal, LabNetwork::Mainnet, &covenant_id, "seller", &txid, 123, "prepared").unwrap();
++        let prepared = std::fs::read_to_string(&journal).unwrap();
++        assert!(prepared.contains("network=mainnet"));
++        assert!(prepared.contains(&format!("covenant_id={covenant_id}")));
++        assert!(prepared.contains(&format!("txid={txid}")));
++        assert!(prepared.contains("status=prepared"));
++        write_settlement_journal(&journal, LabNetwork::Mainnet, &covenant_id, "seller", &txid, 123, "submitted").unwrap();
++        assert!(std::fs::read_to_string(&journal).unwrap().contains("status=submitted"));
++        std::fs::remove_dir_all(directory).unwrap();
++    }
++
+     #[test]
+     fn mecenas_receive_continuation_shape_and_engine_pass() {
+         let key = kp(7);

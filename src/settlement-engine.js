@@ -1,6 +1,7 @@
 "use strict";
 
-const { covenantStoryUrl, explorerTxUrl, nowIso, randomId } = require("./utils");
+const os = require("node:os");
+const { covenantStoryUrl, explorerTxUrl, nowIso, sha256Hex } = require("./utils");
 
 class SettlementEngine {
   constructor(options = {}) {
@@ -8,6 +9,9 @@ class SettlementEngine {
     this.store = options.store || this.escrowEngine?.store || null;
     this.proofBuilder = options.proofBuilder;
     this.kascovLab = options.kascovLab;
+    this.inFlight = new Map();
+    this.workerId = options.workerId || `${os.hostname()}:${process.pid}:${sha256Hex(String(Math.random())).slice(0, 12)}`;
+    this.settlementLeaseTtlMs = Math.max(180_000, Number(options.settlementLeaseTtlMs) || 300_000);
     if (!this.escrowEngine) throw new Error("SettlementEngine requires escrowEngine");
     if (!this.proofBuilder) throw new Error("SettlementEngine requires proofBuilder");
   }
@@ -21,11 +25,19 @@ class SettlementEngine {
     const players = match.players || [];
     const hasChainEscrow = this.escrowEngine.isEscrowDeployed(escrowRecord);
     const stakeKas = Number(match.stakeKas || 0);
+    const covenantProof = this.proofBuilder.covenantPlan(match, winnerAddress, gameState);
+    covenantProof.programHash = escrowRecord?.programHash || "";
+    covenantProof.programProfileFingerprint = escrowRecord?.programProfile?.fingerprint || "";
     const settlement = {
-      id: randomId(`GAME-${match.id || "MATCH"}`),
+      id: `GAME-${sha256Hex([
+        escrowRecord?.id || this.escrowEngine.escrowId(match),
+        match.id || "MATCH",
+        match.roundId || ""
+      ].join("|")).slice(0, 24).toUpperCase()}`,
       matchId: match.id,
       roomId: match.roomId || match.id,
       game: match.game,
+      roundId: match.roundId || "",
       winnerAddress,
       winner: winnerAddress,
       stakeKas,
@@ -33,19 +45,49 @@ class SettlementEngine {
       status: hasChainEscrow ? "pending-chain-covenant-settlement" : "settlement-needs-chain-escrow",
       reason,
       settledAt: nowIso(),
-      covenantProof: this.proofBuilder.covenantPlan(match, winnerAddress, gameState),
+      covenantProof,
+      transcriptHash: covenantProof.transcriptHash,
       chainEscrowId: escrowRecord?.id || "",
       chainCovenantId: escrowRecord?.deploy?.covenantId || "",
       releaseTo: hasChainEscrow ? this.escrowEngine.releaseSideForWinner(escrowRecord, winnerAddress) : ""
     };
-    return this.store?.upsertSettlement(settlement) || settlement;
+    return this.store?.createSettlementIfAbsent?.(settlement) || this.store?.upsertSettlement(settlement) || settlement;
   }
 
-  async settleWinner({ match, winnerAddress, reason = "win", gameState = {}, settlementId = "" }) {
+  assertSettlementDecision(settlement, { match, winnerAddress }) {
+    const conflicts = [];
+    if (settlement.winnerAddress && settlement.winnerAddress !== winnerAddress) conflicts.push("winnerAddress");
+    if (settlement.matchId && settlement.matchId !== match.id) conflicts.push("matchId");
+    if ((settlement.roundId || "") !== (match.roundId || "")) conflicts.push("roundId");
+    if (conflicts.length) {
+      const error = new Error(`Settlement decision conflicts with the persisted result: ${conflicts.join(", ")}`);
+      error.code = "SETTLEMENT_DECISION_CONFLICT";
+      throw error;
+    }
+  }
+
+  settleWinner(input) {
+    const key = this.escrowEngine.escrowId(input.match);
+    const running = this.inFlight.get(key);
+    if (running) return running;
+    const operation = this._settleWinner(input).finally(() => {
+      if (this.inFlight.get(key) === operation) this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, operation);
+    return operation;
+  }
+
+  async _settleWinner({ match, winnerAddress, reason = "win", gameState = {}, settlementId = "" }) {
     const escrowRecord = this.findEscrowForMatch(match);
     const pending =
       (settlementId && this.store?.findSettlement((item) => item.id === settlementId)) ||
+      this.store?.findSettlement((item) =>
+        item.chainEscrowId === escrowRecord?.id &&
+        item.matchId === match.id &&
+        (item.roundId || "") === (match.roundId || "")
+      ) ||
       this.createPendingSettlement({ match, winnerAddress, reason, gameState, escrowRecord });
+    this.assertSettlementDecision(pending, { match, winnerAddress });
 
     if (!this.escrowEngine.isEscrowDeployed(escrowRecord)) {
       return {
@@ -55,10 +97,18 @@ class SettlementEngine {
       };
     }
     if (this.escrowEngine.isEscrowSettled(escrowRecord)) {
+      const reconciled = this.store?.upsertSettlement({
+        ...pending,
+        status: "settled-on-chain",
+        chainSettlementTxid: pending.chainSettlementTxid || escrowRecord.settle?.txid || escrowRecord.settleTxid || "",
+        chainCovenantId: pending.chainCovenantId || escrowRecord.deploy?.covenantId || "",
+        releaseTo: pending.releaseTo || escrowRecord.releaseTo || "",
+        releasedKas: pending.releasedKas || escrowRecord.settle?.releasedKas || 0
+      }) || pending;
       return {
-        settlement: pending,
+        settlement: reconciled,
         escrow: escrowRecord,
-        visible: this.proofBuilder.visibleSettlement(pending, escrowRecord)
+        visible: this.proofBuilder.visibleSettlement(reconciled, escrowRecord)
       };
     }
     if (!this.kascovLab) {
@@ -75,14 +125,28 @@ class SettlementEngine {
     }
 
     const releaseTo = this.escrowEngine.releaseSideForWinner(escrowRecord, winnerAddress);
-    const started = this.store?.upsertEscrow({
-      ...escrowRecord,
-      status: "settling",
-      releaseTo,
-      settlementId: pending.id
-    });
+    const lease = typeof this.store?.acquireSettlementLease === "function"
+      ? this.store.acquireSettlementLease(pending.id, { ownerId: this.workerId, ttlMs: this.settlementLeaseTtlMs })
+      : { token: "in-process-only" };
+    if (!lease) {
+      const currentSettlement = this.store?.findSettlement((item) => item.id === pending.id) || pending;
+      const currentEscrow = this.findEscrowForMatch(match) || escrowRecord;
+      return {
+        settlement: currentSettlement,
+        escrow: currentEscrow,
+        visible: this.proofBuilder.visibleSettlement(currentSettlement, currentEscrow),
+        executionDeferred: true
+      };
+    }
 
+    let started = escrowRecord;
     try {
+      started = this.store?.upsertEscrow({
+        ...escrowRecord,
+        status: "settling",
+        releaseTo,
+        settlementId: pending.id
+      });
       const settle = await this.kascovLab.settleEscrow({
         programHex: escrowRecord.programHex,
         releaseTo,
@@ -92,6 +156,9 @@ class SettlementEngine {
         ...started,
         status: settle.txid ? "settled-on-chain" : "settle-output-unparsed",
         releaseTo,
+        error: "",
+        stdout: "",
+        stderr: "",
         settle: {
           ...settle,
           txExplorerUrl: settle.txid ? explorerTxUrl(settle.txid, this.escrowEngine.network) : "",
@@ -104,7 +171,9 @@ class SettlementEngine {
         chainSettlementTxid: settle.txid || "",
         chainCovenantId: escrowRecord.deploy.covenantId,
         releaseTo,
-        releasedKas: settle.releasedKas || 0
+        releasedKas: settle.releasedKas || 0,
+        chainSettlementError: "",
+        error: ""
       });
       return {
         settlement: updatedSettlement,
@@ -129,6 +198,8 @@ class SettlementEngine {
         escrow: failedEscrow,
         visible: this.proofBuilder.visibleSettlement(failedSettlement, failedEscrow)
       };
+    } finally {
+      if (lease.token !== "in-process-only") this.store?.releaseSettlementLease?.(pending.id, lease.token);
     }
   }
 }

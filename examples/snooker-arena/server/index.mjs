@@ -10,32 +10,54 @@ import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { SnookerEngine } from "../src/game-engine.js";
 import { FaucetService } from "./faucet-service.mjs";
-import { prepareRematchRoom, settlementComplete } from "./rematch.mjs";
+import { CONTENT_SECURITY_POLICY, createOriginPolicy } from "./origin-policy.mjs";
+import { prepareRematchRoom, rematchReady, settledRoomCanClose, settlementComplete } from "./rematch.mjs";
+import { resolveRejoiningIdentity, restoreRoom, roomHasChainCommitment, RoomStore } from "./room-store.mjs";
+import { SettlementFundingMonitor } from "./settlement-funding.mjs";
 import { ensureSettlementVerifier } from "./settlement-verifier.mjs";
+import { authorizeRoomApi } from "./room-api-auth.mjs";
 
 const require = createRequire(import.meta.url);
 const kaspa = require("@kluster/kaspa-wasm");
 const { JsonStore, KaspaCovenantGameKit } = require("kaspa-covenant-game-kit");
+const sdkRoot = path.resolve(path.dirname(require.resolve("kaspa-covenant-game-kit")), "..");
 const snookerAdapter = require("./snooker-adapter.cjs");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "data");
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(root, "data");
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || "0.0.0.0";
 const networkId = process.env.KASPA_COVENANT_NETWORK || "tn10";
-const faucet = new FaucetService({
+const mainnetRequested = ["mainnet", "kaspa", "kaspa-mainnet"].includes(networkId.toLowerCase());
+const mainnetProgramProfileApproved = process.env.KASPA_COVENANT_MAINNET_PROGRAM_APPROVED === "true";
+const mainnetProgramProfileFingerprint = process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT || "";
+const mainnetSettlementRunnerApproved = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED === "true";
+const mainnetSettlementRunnerSha256 = process.env.KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256 || "";
+const mainnetSilvercSha256 = process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256 || "";
+const silvercBin = mainnetRequested ? process.env.SILVERC_BIN || "" : "";
+const mainnetMaxStakeKas = process.env.KASPA_COVENANT_MAINNET_MAX_STAKE_KAS || "1";
+const MAINNET_MIN_STANDARD_STAKE_KAS = 0.05;
+const configuredOrigins = String(process.env.PUBLIC_ORIGINS || (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173"))
+  .split(",").map((value) => value.trim()).filter(Boolean);
+const originPolicy = createOriginPolicy({ production: process.env.NODE_ENV === "production", allowedOrigins: configuredOrigins });
+const corsOptions = { origin: originPolicy.corsOrigin, credentials: true };
+const faucet = mainnetRequested ? null : new FaucetService({
   dataDir,
   networkId: "testnet-10",
   restApi: process.env.TN10_REST_API || "https://api-tn10.kaspa.org"
 });
-const verifier = ensureSettlementVerifier(dataDir);
+const verifier = ensureSettlementVerifier(dataDir, mainnetRequested ? "mainnet" : "testnet-10");
 const bundledKascovLab = path.join(root, "bin", "kascov-lab");
-const kascovLabBin = process.env.KASCOV_LAB_BIN || (fs.existsSync(bundledKascovLab) ? bundledKascovLab : "");
+const configuredKascovLabBin = process.env.KASCOV_LAB_BIN || (fs.existsSync(bundledKascovLab) ? bundledKascovLab : "");
+const kascovLabBin = mainnetRequested && !mainnetSettlementRunnerApproved ? "" : configuredKascovLabBin;
 
 const kit = new KaspaCovenantGameKit({
   networkId,
   allowMainnet: process.env.KASPA_COVENANT_ALLOW_MAINNET === "true",
+  mainnetProgramProfileApproved,
+  mainnetProgramProfileFingerprint,
+  mainnetMaxStakeKas,
   adapter: snookerAdapter,
   store: new JsonStore(path.join(dataDir, "ledger.json")),
   arbiter: {
@@ -43,18 +65,131 @@ const kit = new KaspaCovenantGameKit({
     publicKey: process.env.ARBITER_PUBLIC_KEY || verifier.publicKey,
     arbiterHash: process.env.ARBITER_HASH || verifier.arbiterHash
   },
-  contractName: "snooker_escrow.sil",
-  contractFile: path.join(root, "contracts", "snooker_escrow.sil"),
+  contractName: "escrow.sil",
+  contractFile: path.join(sdkRoot, "contracts", "escrow.sil"),
+  silvercBin,
+  silvercExpectedSha256: mainnetSilvercSha256,
+  silvercSourceFile: path.join(sdkRoot, "contracts", "escrow.sil"),
   kascovLabBin,
-  kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile
+  kascovLabExpectedSha256: mainnetRequested ? mainnetSettlementRunnerSha256 : process.env.KASCOV_LAB_EXPECTED_SHA256,
+  kascovLabApprovedNetworks: [mainnetRequested ? "mainnet" : "tn10"],
+  kascovLabKeyFile: process.env.KASCOV_LAB_KEY_FILE || verifier.keyFile,
+  kascovLabJournalDir: path.join(dataDir, "settlement-journal")
 });
+const settlementFunding = mainnetRequested ? new SettlementFundingMonitor({
+  address: verifier.address,
+  restApi: kit.network.restApi,
+  cacheMs: 15_000
+}) : null;
+
+async function requireSettlementFunding() {
+  if (!settlementFunding) return null;
+  const funding = await settlementFunding.status({ force: true });
+  if (!funding.ready) {
+    const messageZh = funding.code === "VERIFIER_FUNDING_REQUIRED"
+      ? `结算验证者资金不足，需要一笔至少 ${funding.minimumUtxoKas} KAS 的 UTXO`
+      : "暂时无法验证结算手续费余额，请稍后重试";
+    const messageEn = funding.code === "VERIFIER_FUNDING_REQUIRED"
+      ? `Settlement verifier needs one UTXO of at least ${funding.minimumUtxoKas} KAS`
+      : "Unable to verify settlement fee funding; please retry shortly";
+    const error = new Error(messageZh);
+    error.code = funding.code;
+    error.messageEn = messageEn;
+    error.operational = true;
+    error.status = 503;
+    throw error;
+  }
+  return funding;
+}
+
+let sourceCompilerHealth = { ready: false, reason: mainnetRequested ? "compiler-not-configured" : "not-required-on-tn10" };
+if (mainnetRequested) {
+  if (!kit.escrow.silverc) throw new Error("Mainnet startup requires SILVERC_BIN and a pinned compiler SHA-256");
+  sourceCompilerHealth = { ready: true, ...(await kit.escrow.silverc.healthCheck(kit.escrow.kascovTools)) };
+}
+
+let settlementRunnerHealth = { ready: false, reason: kascovLabBin ? "not-checked" : "runner-not-configured" };
+if (kit.kascovLab) {
+  try {
+    settlementRunnerHealth = { ready: true, ...(await kit.kascovLab.healthCheck(kit.network.id)) };
+  } catch (error) {
+    settlementRunnerHealth = { ready: false, reason: error.message || String(error), code: error.code || "RUNNER_HEALTH_FAILED" };
+    if (mainnetRequested) throw error;
+    console.error("Settlement runner disabled:", settlementRunnerHealth.reason);
+    kit.kascovLab = null;
+    kit.settlements.kascovLab = null;
+  }
+}
 
 const app = express();
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, { cors: { origin: true, credentials: true } });
-const liveRooms = new Map();
-app.use(cors());
+const io = new Server(httpServer, {
+  cors: corsOptions,
+  allowRequest: (req, callback) => callback(null, originPolicy.isAllowed(req.headers.origin))
+});
+const roomStore = new RoomStore(path.join(dataDir, "rooms.json"), kit.network.kaspaNetworkId);
+const liveRooms = new Map(roomStore.load().map((record) => {
+  const room = restoreRoom(record, () => new SnookerEngine(null, {}, { headless: true }));
+  return [room.id, room];
+}));
+app.use((_req, res, next) => {
+  res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "2mb" }));
+
+function persistRooms() {
+  roomStore.save(liveRooms.values());
+}
+
+function hasChainCommitment(room) {
+  return roomHasChainCommitment(room);
+}
+
+function lockBroadcastFailedWithoutDeploy(room) {
+  return room?.escrow?.status === "lock-broadcast-failed" && !room?.escrow?.record?.deploy?.txid;
+}
+
+function publicLockError(error) {
+  if (error?.code === "COVENANT_STANDARD_MASS_LIMIT") {
+    const minimumStake = error.minimumStakeKas || MAINNET_MIN_STANDARD_STAKE_KAS;
+    return {
+      error: `锁仓金额太小，交易超过主网标准 mass 限制。请关闭本房间并用至少 ${minimumStake} KAS/人重新创建。`,
+      errorEn: `The stake is too small for the network standard mass limit. Close this room and create a new one with at least ${minimumStake} KAS per player.`,
+      code: error.code
+    };
+  }
+  return {
+    error: error?.message || String(error),
+    errorEn: error?.messageEn || error?.message || String(error),
+    code: error?.code || "LOCK_FAILED"
+  };
+}
+
+function twoPlayerLockError() {
+  const error = new Error("需要两位玩家加入后才能创建共同锁仓交易");
+  error.messageEn = "Two players must join the room before creating the shared escrow transaction";
+  error.code = "LOCK_REQUIRES_TWO_PLAYERS";
+  return error;
+}
+
+function markRoomLockBroadcastFailed(room, errorMessage, errorEn = "") {
+  room.escrow.status = "lock-broadcast-failed";
+  room.escrow.error = errorMessage || "锁仓交易广播失败";
+  room.escrow.errorEn = errorEn || room.escrow.error;
+  room.escrow.draft = null;
+  room.escrow.record = null;
+  for (const item of room.players || []) {
+    item.lockStatus = "unsigned";
+    item.locked = false;
+    item.ready = false;
+  }
+}
 
 function publicRoom(roomId) {
   const room = liveRooms.get(roomId);
@@ -66,14 +201,17 @@ function publicRoom(roomId) {
     practiceMode: Boolean(room?.practiceMode),
     createdAt: room?.createdAt || "",
     turnDeadline: room?.turnDeadline || 0,
-    players: (room?.players || []).map(({ socketId: _socketId, ...player }) => player),
+    players: (room?.players || []).map(({ socketId: _socketId, playerId: _playerId, exitRequested: _exitRequested, ...player }) => player),
     gameState: room?.engine?.snapshot() || null,
+    gameSnapshot: room?.engine?.exportSnapshot() || null,
     escrow: {
       status: escrow.status || "waiting-for-wallets",
       covenantId: escrow.draft?.covenantId || escrow.record?.deploy?.covenantId || "",
       lockTxid: escrow.record?.deploy?.txid || "",
       signedSeats: (room?.players || []).filter((player) => player.lockStatus === "signed" || player.locked).map((player) => player.seat),
-      error: escrow.error || ""
+      error: escrow.error || "",
+      errorEn: escrow.errorEn || escrow.error || "",
+      recoverable: lockBroadcastFailedWithoutDeploy(room)
     },
     settlement: room?.settlement || null,
     rematchSeats: Array.from(room?.rematchSeats || []).sort()
@@ -121,7 +259,7 @@ function liveMatch(room, state = {}) {
 }
 
 function assertEscrowPlayers(room) {
-  if (room.players.length !== 2) throw new Error("需要两位玩家加入后才能创建共同锁仓交易");
+  if (room.players.length !== 2) throw twoPlayerLockError();
   const sorted = room.players.slice().sort((a, b) => a.seat - b.seat);
   for (const player of sorted) {
     if (!player.address?.startsWith(`${kit.network.addressPrefix}:`)) throw new Error(`Player ${player.seat + 1} 需要连接 ${kit.network.addressPrefix} 钱包`);
@@ -137,16 +275,25 @@ async function prepareRoomEscrow(room) {
   if (room.escrow?.draft) return room.escrow.draft;
   if (room.escrow?.buildPromise) return room.escrow.buildPromise;
   room.escrow.status = "building-lock-transaction";
+  persistRooms();
   room.escrow.buildPromise = kit.buildDeployDraft({ match: liveMatch(room) })
     .then((draft) => {
       room.escrow.draft = draft;
       room.escrow.status = "awaiting-player-signatures";
       room.escrow.error = "";
+      persistRooms();
       return draft;
     })
     .catch((error) => {
-      room.escrow.status = "lock-build-failed";
-      room.escrow.error = error.message || String(error);
+      const publicError = publicLockError(error);
+      if (error.code === "COVENANT_STANDARD_MASS_LIMIT") {
+        markRoomLockBroadcastFailed(room, publicError.error, publicError.errorEn);
+      } else {
+        room.escrow.status = "lock-build-failed";
+        room.escrow.error = publicError.error;
+        room.escrow.errorEn = publicError.errorEn;
+      }
+      persistRooms();
       throw error;
     })
     .finally(() => { room.escrow.buildPromise = null; });
@@ -159,6 +306,7 @@ async function submitRoomSignature(room, player, signedTransactionSafeJson) {
   const signer = draft.signers.find((item) => item.address === player.address);
   if (!signer || signer.inputIndex !== player.seat) throw new Error("钱包与锁仓输入不匹配");
   player.lockStatus = "submitting";
+  persistRooms();
   const result = await kit.submitPlayerSignature({
     match: liveMatch(room),
     draft,
@@ -173,13 +321,13 @@ async function submitRoomSignature(room, player, signedTransactionSafeJson) {
     room.players.forEach((item) => { item.lockStatus = "signed"; });
     confirmRoomEscrow(room);
   } else if (result.escrow?.status === "player-funded-broadcast-failed") {
-    room.escrow.status = "lock-broadcast-failed";
-    room.escrow.error = result.escrow.error || "锁仓交易广播失败";
-    player.lockStatus = "signed";
+    const publicError = publicLockError(result.escrow);
+    markRoomLockBroadcastFailed(room, publicError.error, publicError.errorEn);
   } else {
     room.escrow.status = "awaiting-player-signatures";
     player.lockStatus = "signed";
   }
+  persistRooms();
   return result;
 }
 
@@ -204,13 +352,19 @@ async function confirmRoomEscrow(room) {
         room.escrow.status = "locked-on-chain";
         room.escrow.error = "";
         room.players.forEach((item) => { item.locked = true; item.lockStatus = "locked"; });
+        persistRooms();
         io.to(room.id).emit("room:state", publicRoom(room.id));
+        io.to(room.id).emit("room:escrow-locked", {
+          lockTxid: room.escrow.record?.deploy?.txid || "",
+          room: publicRoom(room.id)
+        });
         return true;
       }
       await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
     room.escrow.status = "lock-confirmation-timeout";
-    room.escrow.error = "锁仓交易已广播，但暂未在 TN10 UTXO 集中确认";
+    room.escrow.error = `锁仓交易已广播，但暂未在 ${kit.network.label} UTXO 集中确认`;
+    persistRooms();
     io.to(room.id).emit("room:state", publicRoom(room.id));
     return false;
   })().finally(() => { room.escrow.confirmPromise = null; });
@@ -221,16 +375,23 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
   if (!playerId) return { ok: false, error: "playerId is required" };
   for (const joinedRoom of socket.rooms) if (joinedRoom !== socket.id) socket.leave(joinedRoom);
   const previous = room.players.find((player) => player.playerId === playerId);
+  let identity;
+  try {
+    identity = resolveRejoiningIdentity(previous, { name, address, publicKey }, hasChainCommitment(room));
+  } catch (error) {
+    return { ok: false, error: error.message || String(error), code: error.code };
+  }
   let seat = previous?.seat;
   if (!Number.isInteger(seat)) seat = [0, 1].find((candidate) => !room.players.some((player) => player.seat === candidate));
   room.players = room.players.filter((player) => player.playerId !== playerId && player.socketId !== socket.id);
   const role = Number.isInteger(seat) ? "player" : "spectator";
   if (role === "player") {
     room.players.push({
-      playerId, seat, name, address, publicKey, socketId: socket.id, online: true,
+      playerId, seat, ...identity, socketId: socket.id, online: true,
       ready: previous?.ready || false,
       locked: previous?.locked || false,
-      lockStatus: previous?.lockStatus || "unsigned"
+      lockStatus: previous?.lockStatus || "unsigned",
+      exitRequested: false
     });
   }
   socket.data.roomId = room.id;
@@ -238,13 +399,22 @@ function joinRoom(socket, room, { playerId, name = "访客球手", address = "",
   socket.data.seat = seat;
   socket.data.role = role;
   socket.join(room.id);
+  persistRooms();
   io.to(room.id).emit("room:state", publicRoom(room.id));
+  if (!previous && role === "player") {
+    socket.to(room.id).emit("room:player-joined", {
+      player: { seat, name: identity.name, address: identity.address, online: true },
+      room: publicRoom(room.id)
+    });
+  }
   emitLobby();
+  startRematchIfReady(room);
   return { ok: true, role, seat, room: publicRoom(room.id) };
 }
 
 function canAct(socket, room) {
   return room && socket.data.role === "player" && Number.isInteger(socket.data.seat) &&
+    room.players.some((player) => player.seat === socket.data.seat && player.socketId === socket.id) &&
     (room.practiceMode || room.engine?.state.currentPlayer === socket.data.seat);
 }
 
@@ -252,12 +422,34 @@ function gameIsActive(room) {
   return room?.status === "playing" || room?.status === "practice";
 }
 
+function resumeRoomRuntime(room) {
+  if (["confirming-lock-on-chain", "lock-confirmation-timeout"].includes(room?.escrow?.status) && room.escrow?.record?.deploy?.txid) {
+    confirmRoomEscrow(room);
+  }
+  if (room?.status === "finished" && room.settlementContext && !settlementComplete(room.settlement)) {
+    scheduleRoomSettlementRetry(room);
+  }
+  if (room?.status === "playing" && room.players?.length === 2 && room.players.every((player) => player.online) && !room.turnTimer) {
+    startTurnTimer(room);
+  }
+}
+
 function resetRoomForRematch(room) {
   clearTurnTimer(room);
   if (room.settlementTimer) clearTimeout(room.settlementTimer);
   room.settlementTimer = null;
   prepareRematchRoom(room);
+  persistRooms();
   return publicRoom(room.id);
+}
+
+function startRematchIfReady(room) {
+  if (!rematchReady(room)) return false;
+  const nextRoom = resetRoomForRematch(room);
+  io.to(room.id).emit("game:rematch-start", { room: nextRoom });
+  io.to(room.id).emit("room:state", nextRoom);
+  emitLobby();
+  return true;
 }
 
 function scheduleRoomSettlementRetry(room) {
@@ -267,22 +459,38 @@ function scheduleRoomSettlementRetry(room) {
   room.settlementTimer = setTimeout(async () => {
     room.settlementTimer = null;
     room.settlementAttempts = attempt + 1;
+    persistRooms();
     const context = room.settlementContext;
     try {
       room.settlement = await kit.settleWinner({
         match: context.match,
         state: context.state,
         winnerAddress: context.winnerAddress,
-        reason: "authoritative-snooker-result-retry",
+        reason: context.reason || "authoritative-snooker-result-retry",
         settlementId: room.settlement?.settlement?.id || ""
       });
     } catch (error) {
       room.settlement = { status: "settlement-retrying", error: error.message || String(error), winnerAddress: context.winnerAddress };
     }
+    persistRooms();
     io.to(room.id).emit("game:settlement", { settlement: room.settlement, room: publicRoom(room.id) });
-    if (!settlementComplete(room.settlement)) scheduleRoomSettlementRetry(room);
+    if (settlementComplete(room.settlement)) {
+      if (!closeSettledRoomIfExited(room)) startRematchIfReady(room);
+    }
+    else scheduleRoomSettlementRetry(room);
   }, delay);
   room.settlementTimer.unref?.();
+}
+
+function closeSettledRoomIfExited(room) {
+  if (!settledRoomCanClose(room)) return false;
+  clearTurnTimer(room);
+  if (room.settlementTimer) clearTimeout(room.settlementTimer);
+  room.settlementTimer = null;
+  liveRooms.delete(room.id);
+  persistRooms();
+  emitLobby();
+  return true;
 }
 
 function clearTurnTimer(room) {
@@ -295,10 +503,12 @@ function startTurnTimer(room) {
   clearTurnTimer(room);
   if (room.status !== "playing" || room.engine?.state.winner !== null) return;
   room.turnDeadline = Date.now() + 30_000;
+  persistRooms();
   room.turnTimer = setTimeout(() => {
     if (room.status !== "playing" || room.engine?.inMotion || room.engine?.state.winner !== null) return;
     const timedOutSeat = room.engine.state.currentPlayer;
     room.engine.timeoutFoul();
+    persistRooms();
     const snapshot = room.engine.exportSnapshot();
     io.to(room.id).emit("game:timeout", { seat: timedOutSeat, snapshot });
     io.to(room.id).emit("game:state", { snapshot, sequence: room.engine.state.shot, turnDeadline: Date.now() + 30_000 });
@@ -313,6 +523,7 @@ async function finalizeRoom(room) {
     clearTurnTimer(room);
     const winnerSeat = room.engine.state.winner;
     room.settlement = { status: "practice-no-settlement", potKas: 0 };
+    persistRooms();
     io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement, practiceMode: true });
     return;
   }
@@ -321,15 +532,32 @@ async function finalizeRoom(room) {
   const winnerSeat = room.engine.state.winner;
   const winner = room.players.find((player) => player.seat === winnerSeat);
   const state = room.engine.snapshot();
-  state.winnerAddress = winner?.address || `kaspatest:seat-${winnerSeat}`;
+  if (!winner?.address?.startsWith(`${kit.network.addressPrefix}:`)) {
+    room.settlementContext = null;
+    room.settlement = {
+      status: "settlement-invalid-winner-identity",
+      error: "胜者钱包身份缺失，已停止自动结算",
+      errorEn: "Winner wallet identity is missing; automatic settlement has stopped"
+    };
+    persistRooms();
+    io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement });
+    return;
+  }
+  state.winnerAddress = winner.address;
   state.result = "win";
+  const match = liveMatch(room, state);
+  const reason = state.visits?.at(-1)?.reason === "concession"
+    ? "authoritative-player-concession"
+    : "authoritative-snooker-result";
+  room.settlementContext = { match, state, winnerAddress: state.winnerAddress, reason };
+  room.settlement ||= { status: "settlement-pending", winnerAddress: state.winnerAddress };
+  persistRooms();
   try {
-    const match = liveMatch(room, state);
-    room.settlementContext = { match, state, winnerAddress: state.winnerAddress };
-    room.settlement = await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason: "authoritative-snooker-result" });
+    room.settlement = await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason });
   } catch (error) {
     room.settlement = { status: "settlement-pending", error: error.message || String(error), winnerAddress: state.winnerAddress };
   }
+  persistRooms();
   io.to(room.id).emit("game:finished", { room: publicRoom(room.id), winnerSeat, settlement: room.settlement });
   if (!settlementComplete(room.settlement)) scheduleRoomSettlementRetry(room);
   emitLobby();
@@ -377,9 +605,12 @@ io.on("connection", (socket) => {
 
   socket.on("room:create", ({ playerId, name, address, publicKey, stakeKas = 25 } = {}, acknowledge) => {
     const id = createRoomId();
+    const defaultStake = kit.network.id === "mainnet" ? Math.max(MAINNET_MIN_STANDARD_STAKE_KAS, Math.min(0.1, Number(mainnetMaxStakeKas))) : 25;
+    const maximumStake = kit.network.id === "mainnet" ? Number(mainnetMaxStakeKas) : 10_000;
+    const minimumStake = kit.network.id === "mainnet" ? MAINNET_MIN_STANDARD_STAKE_KAS : 0.00000001;
     const room = {
       id,
-      stakeKas: Math.max(0, Math.min(10_000, Number(stakeKas) || 25)),
+      stakeKas: Math.max(minimumStake, Math.min(maximumStake, Number(stakeKas) || defaultStake)),
       status: "waiting",
       players: [],
       roundId: crypto.randomUUID(),
@@ -396,8 +627,10 @@ io.on("connection", (socket) => {
   socket.on("room:join", ({ roomId, playerId, name, address, publicKey } = {}, acknowledge) => {
     const room = liveRooms.get(String(roomId || "").toUpperCase());
     if (!room) return acknowledge?.({ ok: false, error: "房间不存在或已结束" });
-    if (room.status !== "waiting") return acknowledge?.({ ok: false, error: "该房间已经开始比赛" });
+    const returningPlayer = room.players.some((player) => player.playerId === playerId);
+    if (room.status !== "waiting" && !returningPlayer) return acknowledge?.({ ok: false, error: "该房间已经开始比赛" });
     acknowledge?.(joinRoom(socket, room, { playerId, name, address, publicKey }));
+    resumeRoomRuntime(room);
   });
 
   socket.on("room:practice", ({ roomId } = {}, acknowledge) => {
@@ -412,6 +645,7 @@ io.on("connection", (socket) => {
     room.stakeKas = 0;
     room.escrow.status = "practice-no-stake";
     ensureRoomEngine(room);
+    persistRooms();
     io.to(roomId).emit("room:game-start", {
       room: publicRoom(roomId),
       snapshot: room.engine.exportSnapshot(),
@@ -426,16 +660,30 @@ io.on("connection", (socket) => {
     const room = liveRooms.get(roomId);
     const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
+    if (room.players.length !== 2) return acknowledge?.({ ok: false, ...publicLockError(twoPlayerLockError()) });
     if (player.locked) return acknowledge?.({ ok: true, status: "locked-on-chain", room: publicRoom(roomId) });
+    if (lockBroadcastFailedWithoutDeploy(room)) {
+      const publicState = publicRoom(roomId);
+      return acknowledge?.({
+        ok: false,
+        status: "lock-broadcast-failed",
+        error: publicState.escrow.error,
+        errorEn: publicState.escrow.errorEn,
+        code: "LOCK_BROADCAST_FAILED",
+        room: publicState
+      });
+    }
     if (player.lockStatus === "signed") {
       if (room.escrow?.record?.deploy?.txid) confirmRoomEscrow(room);
       return acknowledge?.({ ok: true, status: room.escrow?.record?.deploy?.txid ? "confirming-lock-on-chain" : "waiting-for-opponent-signature", room: publicRoom(roomId) });
     }
     try {
+      await requireSettlementFunding();
       const draft = await prepareRoomEscrow(room);
       const signer = draft.signers.find((item) => item.address === player.address);
       if (!signer) throw new Error("当前钱包不在该锁仓交易中");
       player.lockStatus = "signing";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
       acknowledge?.({
         ok: true,
@@ -450,8 +698,9 @@ io.on("connection", (socket) => {
       });
     } catch (error) {
       player.lockStatus = "unsigned";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: false, error: error.message || String(error) });
+      acknowledge?.({ ok: false, ...publicLockError(error) });
     }
   });
 
@@ -463,15 +712,38 @@ io.on("connection", (socket) => {
       return acknowledge?.({ ok: false, error: "钱包没有返回有效的签名交易" });
     }
     try {
+      await requireSettlementFunding();
+    } catch (error) {
+      return acknowledge?.({ ok: false, error: error.message || String(error), errorEn: error.messageEn, code: error.code });
+    }
+    try {
       const result = await submitRoomSignature(room, player, signedTransactionSafeJson);
-      io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: true, status: room.escrow.status, escrow: publicRoom(roomId).escrow, merge: result.merge });
+      const publicState = publicRoom(roomId);
+      io.to(roomId).emit("room:state", publicState);
+      if (room.escrow.status === "lock-broadcast-failed") io.to(roomId).emit("room:lock-failed", { room: publicState, escrow: publicState.escrow });
+      else socket.to(roomId).emit("room:player-signed", { seat: player.seat, room: publicState });
+      acknowledge?.({ ok: true, status: room.escrow.status, escrow: publicState.escrow, merge: result.merge });
     } catch (error) {
       player.lockStatus = "unsigned";
-      room.escrow.error = error.message || String(error);
+      const publicError = publicLockError(error);
+      room.escrow.error = publicError.error;
+      room.escrow.errorEn = publicError.errorEn;
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
-      acknowledge?.({ ok: false, error: error.message || String(error) });
+      acknowledge?.({ ok: false, ...publicError });
     }
+  });
+
+  socket.on("room:lock:abandon", ({ roomId } = {}, acknowledge) => {
+    const room = liveRooms.get(roomId);
+    const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
+    if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
+    if (!lockBroadcastFailedWithoutDeploy(room)) return acknowledge?.({ ok: false, error: "当前房间不能关闭锁仓流程" });
+    liveRooms.delete(roomId);
+    persistRooms();
+    io.to(roomId).emit("room:closed", { roomId, reason: "lock-broadcast-failed" });
+    emitLobby();
+    acknowledge?.({ ok: true });
   });
 
   socket.on("room:lock:cancel", ({ roomId } = {}) => {
@@ -479,6 +751,7 @@ io.on("connection", (socket) => {
     const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
     if (player && player.lockStatus === "signing") {
       player.lockStatus = "unsigned";
+      persistRooms();
       io.to(roomId).emit("room:state", publicRoom(roomId));
     }
   });
@@ -489,6 +762,7 @@ io.on("connection", (socket) => {
     if (!player) return acknowledge?.({ ok: false, error: "无权操作该房间" });
     if (!player.locked || room.escrow?.status !== "locked-on-chain") return acknowledge?.({ ok: false, error: "请等待双方押金锁仓交易上链" });
     player.ready = true;
+    persistRooms();
     if (room.players.length === 2 && room.escrow.status === "locked-on-chain" && room.players.every((item) => item.locked && item.ready)) {
       room.status = "playing";
       ensureRoomEngine(room);
@@ -503,9 +777,20 @@ io.on("connection", (socket) => {
   socket.on("room:leave", ({ roomId } = {}, acknowledge) => {
     const room = liveRooms.get(roomId);
     if (room) {
-      room.players = room.players.filter((player) => player.socketId !== socket.id);
-      if (!room.players.length) liveRooms.delete(roomId);
+      const player = room.players.find((item) => item.socketId === socket.id);
+      if (player && hasChainCommitment(room)) {
+        player.online = false;
+        player.ready = false;
+        player.socketId = "";
+        player.exitRequested = true;
+      } else {
+        room.players = room.players.filter((item) => item.socketId !== socket.id);
+      }
+      if (!room.players.length && !hasChainCommitment(room)) liveRooms.delete(roomId);
+      else if (closeSettledRoomIfExited(room)) { /* both players explicitly exited */ }
       else io.to(roomId).emit("room:state", publicRoom(roomId));
+      if (room.status === "playing" && room.players.some((item) => !item.online)) clearTurnTimer(room);
+      persistRooms();
     }
     socket.leave(roomId);
     socket.data.roomId = "";
@@ -531,6 +816,7 @@ io.on("connection", (socket) => {
     clearTurnTimer(room);
     const snapshot = room.engine.runUntilSettled();
     if (room.engine.state.winner === null && !room.practiceMode) startTurnTimer(room);
+    persistRooms();
     io.to(roomId).emit("game:state", { snapshot, sequence: room.engine.state.shot, turnDeadline: room.turnDeadline });
     finalizeRoom(room);
   });
@@ -542,10 +828,34 @@ io.on("connection", (socket) => {
     const y = Number(placement?.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (!room.engine.applyRemoteCuePlacement({ x, y })) return;
+    persistRooms();
     socket.to(roomId).emit("game:cue-placement", {
       placement: { x, y, player: socket.data.seat, beforeShot: Number(placement?.beforeShot || 1), reason: placement?.reason || "cue-ball-in-hand" }
     });
     io.to(roomId).emit("game:state", { snapshot: room.engine.exportSnapshot(), sequence: room.engine.state.shot, turnDeadline: room.turnDeadline });
+  });
+
+  socket.on("game:concede", async ({ roomId } = {}, acknowledge) => {
+    const room = liveRooms.get(roomId);
+    const player = room?.players.find((item) => item.seat === socket.data.seat && item.socketId === socket.id);
+    if (!player || socket.data.roomId !== roomId) {
+      return acknowledge?.({ ok: false, error: "无权操作该房间", errorEn: "Not authorized for this room" });
+    }
+    if (room.practiceMode || room.status !== "playing" || room.engine?.state.winner !== null) {
+      return acknowledge?.({ ok: false, error: "当前对局不能认输", errorEn: "This frame cannot be conceded" });
+    }
+    if (room.engine.inMotion) {
+      return acknowledge?.({ ok: false, error: "请等待所有球静止后再认输", errorEn: "Wait for every ball to stop before conceding" });
+    }
+    if (!room.engine.concede(player.seat)) {
+      return acknowledge?.({ ok: false, error: "认输请求未被规则引擎接受", errorEn: "The rules engine rejected the concession" });
+    }
+    clearTurnTimer(room);
+    persistRooms();
+    const winnerSeat = player.seat === 0 ? 1 : 0;
+    io.to(roomId).emit("game:conceded", { seat: player.seat, winnerSeat });
+    await finalizeRoom(room);
+    acknowledge?.({ ok: true, winnerSeat });
   });
 
   socket.on("game:settlement:status", ({ roomId } = {}, acknowledge) => {
@@ -562,18 +872,15 @@ io.on("connection", (socket) => {
       return acknowledge?.({ ok: false, error: "练习模式请直接重新摆球" });
     }
     if (room.status !== "finished") return acknowledge?.({ ok: false, error: "本局尚未结束" });
-    if (!settlementComplete(room.settlement)) return acknowledge?.({ ok: false, error: "请等待本局链上结算完成" });
     room.rematchSeats ||= new Set();
     room.rematchSeats.add(player.seat);
+    persistRooms();
     const seats = Array.from(room.rematchSeats).sort();
-    io.to(roomId).emit("game:rematch-status", { seats, required: room.players.length });
-    if (room.players.length === 2 && seats.length === 2) {
-      const nextRoom = resetRoomForRematch(room);
-      io.to(roomId).emit("game:rematch-start", { room: nextRoom });
-      io.to(roomId).emit("room:state", nextRoom);
-      emitLobby();
-    }
-    acknowledge?.({ ok: true, seats, required: room.players.length });
+    const required = 2;
+    const waitingForSettlement = !settlementComplete(room.settlement);
+    io.to(roomId).emit("game:rematch-status", { seats, required, waitingForSettlement });
+    const started = startRematchIfReady(room);
+    acknowledge?.({ ok: true, seats, required, waitingForSettlement, started });
   });
 
   socket.on("practice:reset", ({ roomId } = {}, acknowledge) => {
@@ -584,6 +891,7 @@ io.on("connection", (socket) => {
     room.engine.state.roundId = room.roundId;
     room.status = "practice";
     room.settlement = null;
+    persistRooms();
     io.to(roomId).emit("game:reset", { snapshot: room.engine.exportSnapshot(), practiceMode: true });
     acknowledge?.({ ok: true });
   });
@@ -594,53 +902,79 @@ io.on("connection", (socket) => {
     if (!room) return;
     const player = room.players.find((item) => item.socketId === socket.id);
     if (player) { player.online = false; player.socketId = ""; player.ready = false; }
+    if (room.status === "playing" && room.players.some((item) => !item.online)) clearTurnTimer(room);
     liveRooms.set(roomId, room);
+    persistRooms();
     io.to(roomId).emit("room:state", publicRoom(roomId));
     emitLobby();
   });
 });
 
-function roomFrom(body = {}) {
-  return {
-    id: body.roomId || "KSP-SNOOKER-001",
-    stakeKas: Number(body.stakeKas || 25),
-    players: (body.players || []).map((player, seat) => ({
-      seat,
-      role: seat === 0 ? "challenger" : "opponent",
-      address: player.address || "",
-      publicKey: player.publicKey || ""
-    }))
-  };
-}
+app.get("/api/health", async (_req, res) => {
+  const funding = settlementFunding ? await settlementFunding.status() : null;
+  res.json({ ok: true, network: kit.network, settlementFunding: funding });
+});
 
-function stateFrom(body = {}) {
-  return snookerAdapter.createState({ ...body.state, roundId: body.roundId || body.state?.roundId });
-}
-
-function matchFrom(body = {}) {
-  const room = roomFrom(body);
-  const state = stateFrom(body);
-  return { room, state, match: kit.toMatch({ game: "snooker", room, state }) };
-}
-
-app.get("/api/health", (_req, res) => res.json({ ok: true, network: kit.network }));
-
-app.get("/api/config", (_req, res) => {
+app.get("/api/config", async (_req, res) => {
+  const isMainnet = kit.network.id === "mainnet";
+  const funding = settlementFunding ? await settlementFunding.status() : { ready: true, code: "NOT_REQUIRED" };
+  const mainnetStakeCap = Math.min(1, Number(mainnetMaxStakeKas));
+  const mainnetStakeOptions = [...new Set([MAINNET_MIN_STANDARD_STAKE_KAS, 0.1, mainnetStakeCap])]
+    .filter((stake) => Number.isFinite(stake) && stake >= MAINNET_MIN_STANDARD_STAKE_KAS && stake <= mainnetStakeCap)
+    .sort((left, right) => left - right);
+  const publicRunnerHealth = settlementRunnerHealth.ready
+    ? {
+        ready: true,
+        fileName: settlementRunnerHealth.fileName,
+        sha256: settlementRunnerHealth.sha256,
+        size: settlementRunnerHealth.size,
+        network: settlementRunnerHealth.network,
+        settleEscrow: settlementRunnerHealth.settleEscrow,
+        mainnetCapable: settlementRunnerHealth.mainnetCapable,
+        durableJournal: settlementRunnerHealth.durableJournal
+      }
+    : { ready: false, code: settlementRunnerHealth.code || "RUNNER_UNAVAILABLE", reason: settlementRunnerHealth.reason };
+  const staticEscrowReady = settlementRunnerHealth.ready && (!isMainnet || (
+    sourceCompilerHealth.ready && kit.escrow.mainnetProgramProfileApproved && mainnetSettlementRunnerApproved
+  ));
+  const escrowReady = staticEscrowReady && funding.ready;
   res.json({
     network: {
       id: kit.network.id,
       label: kit.network.label,
       symbol: kit.network.currencySymbol,
       isTestnet: kit.network.isTestnet,
+      addressPrefix: kit.network.addressPrefix,
       explorer: kit.network.kascovExplorerBase
     },
-    chainMode: kit.kascovLab ? "live" : "unavailable",
-    escrowReady: Boolean(kit.kascovLab),
-    mainnetGuarded: true
+    chainMode: !staticEscrowReady ? "unavailable" : funding.ready ? "live" : "needs-funding",
+    escrowReady,
+    faucetAvailable: kit.network.isTestnet,
+    stakeOptions: isMainnet ? mainnetStakeOptions : [5, 25, 50, 100],
+    mainnetGuarded: true,
+    mainnetReadiness: {
+      mode: isMainnet ? "closed-test" : "tn10",
+      programProfileApproved: !isMainnet || kit.escrow.mainnetProgramProfileApproved,
+      programProfileFingerprint: kit.escrow.programProfile.fingerprint,
+      configuredProgramProfileFingerprint: isMainnet ? mainnetProgramProfileFingerprint : "",
+      sourceCompiler: isMainnet ? {
+        ready: sourceCompilerHealth.ready,
+        compilerVersion: sourceCompilerHealth.compilerVersion,
+        compilerSha256: sourceCompilerHealth.compilerSha256,
+        upstreamCommit: sourceCompilerHealth.upstreamCommit,
+        sourceSha256: sourceCompilerHealth.sourceSha256,
+        testVectorProgramSha256: sourceCompilerHealth.testVectorProgramSha256
+      } : { ready: false, reason: sourceCompilerHealth.reason },
+      settlementRunnerApproved: !isMainnet || mainnetSettlementRunnerApproved,
+      settlementRunnerHealth: publicRunnerHealth,
+      settlementFunding: funding,
+      maxStakeKas: isMainnet ? Number(mainnetMaxStakeKas) : null
+    }
   });
 });
 
 app.get("/api/faucet", async (_req, res) => {
+  if (!kit.network.isTestnet) return res.status(404).json({ error: "Faucet is available on TN10 only" });
   let balanceKas = null;
   try { balanceKas = await faucet.balanceKas(); } catch {}
   res.json({ ...faucet.publicInfo(), balanceKas });
@@ -648,6 +982,7 @@ app.get("/api/faucet", async (_req, res) => {
 
 app.post("/api/faucet/claim", async (req, res, next) => {
   try {
+    if (!kit.network.isTestnet) return res.status(404).json({ error: "Faucet is available on TN10 only" });
     const claim = await faucet.claim(String(req.body?.address || "").trim(), Number(req.body?.amountKas || 200));
     res.json({ ok: true, claim });
   } catch (error) {
@@ -657,7 +992,9 @@ app.post("/api/faucet/claim", async (req, res, next) => {
 
 app.post("/api/escrow/intent", (req, res, next) => {
   try {
-    const { match } = matchFrom(req.body);
+    const { room } = authorizeRoomApi(liveRooms, req.body);
+    assertEscrowPlayers(room);
+    const match = liveMatch(room, room.engine?.snapshot() || {});
     res.json({ match, intent: kit.createEscrowIntent({ match }) });
   } catch (error) {
     next(error);
@@ -666,33 +1003,14 @@ app.post("/api/escrow/intent", (req, res, next) => {
 
 app.post("/api/escrow/draft", async (req, res, next) => {
   try {
-    const { match } = matchFrom(req.body);
-    const draft = await kit.buildDeployDraft({ match });
+    await requireSettlementFunding();
+    const { room } = authorizeRoomApi(liveRooms, req.body);
+    const match = liveMatch(room, room.engine?.snapshot() || {});
+    const draft = await prepareRoomEscrow(room);
     res.json({ match, draft });
   } catch (error) {
     next(error);
   }
-});
-
-app.post("/api/settlement/prepare", async (req, res, next) => {
-  try {
-    const { match, state } = matchFrom(req.body);
-    state.scores = req.body.state?.scores || state.scores;
-    state.moves = req.body.state?.moves || state.moves;
-    state.winnerAddress = req.body.winnerAddress || state.winnerAddress;
-    state.result = state.winnerAddress ? "win" : state.result;
-    const proof = kit.createSettlementProof({ match, state, winnerAddress: state.winnerAddress });
-    const result = state.winnerAddress
-      ? await kit.settleWinner({ match, state, winnerAddress: state.winnerAddress, reason: "snooker-frame-win" })
-      : null;
-    res.json({ proof, result });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/ledger", (_req, res) => {
-  res.json({ escrows: kit.listEscrows(), settlements: kit.listSettlements() });
 });
 
 app.use(express.static(path.join(root, "dist")));
@@ -703,9 +1021,11 @@ app.get("/{*splat}", (req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   const status = error.status || 400;
-  if (status >= 500) console.error(error);
+  if (status >= 500 && !error.operational) console.error(error);
   res.status(status).json({
     error: error.message || "Request failed",
+    errorEn: error.messageEn || error.message || "Request failed",
+    code: error.code || "REQUEST_FAILED",
     status: error.intent?.status || "error",
     intent: error.intent || null
   });
@@ -713,6 +1033,9 @@ app.use((error, _req, res, _next) => {
 
 httpServer.listen(port, host, () => {
   console.log(`Kaspa Snooker API · ${kit.network.label} · http://${host}:${port}`);
+  if (liveRooms.size) console.log(`Recovered ${liveRooms.size} persisted room(s)`);
+  persistRooms();
+  for (const room of liveRooms.values()) resumeRoomRuntime(room);
   recoverPendingSettlements();
   const recoveryTimer = setInterval(recoverPendingSettlements, 60_000);
   recoveryTimer.unref?.();

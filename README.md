@@ -6,6 +6,14 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 
 > Experimental: TN10 is the default. Mainnet uses the same SDK path, but requires an explicit switch because it spends real KAS.
 
+> Mainnet safety: `allowMainnet` only enables the network preset. Building a
+> mainnet funding draft additionally requires `mainnetProgramProfileApproved`
+> plus the exact reviewed, source-linked profile fingerprint. The SDK recompiles
+> every mainnet Escrow instance with a hash-pinned official `silverc` binary and
+> rejects any byte difference. Closed-test builds enforce a hard
+> maximum of 1 KAS per player. This is for closed testing, not
+> a claim that the covenant program has completed an independent audit.
+
 ## What This SDK Does
 
 - Creates a two-player, player-funded covenant escrow intent on TN10 or mainnet.
@@ -55,7 +63,7 @@ const kit = new KaspaCovenantGameKit({
     publicKey: process.env.ARBITER_PUBLIC_KEY,
     arbiterHash: process.env.ARBITER_HASH
   },
-  contractFile: "./contracts/gomoku_escrow.sil"
+  contractFile: "./contracts/escrow.sil"
 });
 
 const state = kit.createState("my-game");
@@ -69,6 +77,7 @@ Default TN10:
 
 ```bash
 KASPA_COVENANT_NETWORK=tn10
+PUBLIC_ORIGINS=https://game.example.com
 ```
 
 Mainnet, same API, explicit confirmation:
@@ -76,6 +85,15 @@ Mainnet, same API, explicit confirmation:
 ```bash
 KASPA_COVENANT_NETWORK=mainnet
 KASPA_COVENANT_ALLOW_MAINNET=true
+KASPA_COVENANT_MAINNET_PROGRAM_APPROVED=true
+KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT=<64-char-reviewed-profile-fingerprint>
+SILVERC_BIN=/absolute/path/to/silverc
+KASPA_COVENANT_MAINNET_SILVERC_SHA256=<64-char-reviewed-compiler-sha256>
+KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_APPROVED=true
+KASPA_COVENANT_MAINNET_SETTLEMENT_RUNNER_SHA256=<64-char-reviewed-runner-sha256>
+KASCOV_LAB_JOURNAL_DIR=/absolute/private/data/settlement-journal
+PUBLIC_ORIGINS=https://game.example.com
+KASPA_COVENANT_MAINNET_MAX_STAKE_KAS=1
 ```
 
 Direct constructor usage:
@@ -86,6 +104,11 @@ const tn10Kit = new KaspaCovenantGameKit({ networkId: "tn10", adapter: myGame, a
 const mainnetKit = new KaspaCovenantGameKit({
   networkId: "mainnet",
   allowMainnet: true,
+  mainnetProgramProfileApproved: true,
+  mainnetProgramProfileFingerprint: process.env.KASPA_COVENANT_MAINNET_PROGRAM_FINGERPRINT,
+  silvercBin: process.env.SILVERC_BIN,
+  silvercExpectedSha256: process.env.KASPA_COVENANT_MAINNET_SILVERC_SHA256,
+  mainnetMaxStakeKas: "1",
   adapter: myGame,
   arbiter
 });
@@ -96,6 +119,36 @@ and proof APIs stay the same. The preset changes address prefixes, network id,
 REST / wRPC targets, explorer links, and display symbol.
 
 More detail: [docs/network-switch.md](docs/network-switch.md)
+
+Mainnet security gates: [docs/mainnet-readiness.md](docs/mainnet-readiness.md)
+
+After configuring the reviewed program and runner, execute the read-only gate:
+
+```bash
+npm run mainnet:preflight
+```
+
+With the pinned official compiler configured, print the exact source-linked
+manifest and fingerprint that must be reviewed before a mainnet draft can be
+built:
+
+```bash
+node examples/program-profile.js
+```
+
+The profile pins SilverScript commit
+`956868ea63a2af4176889f1331449b5f4f9e1df8`, the official Escrow source hash,
+the local `silverc` executable hash, and the reproduced program generator.
+Without `SILVERC_BIN` and its matching SHA-256, the command exits non-zero and
+the SDK will not approve a mainnet funding draft.
+
+Mainnet settlement runners are independently guarded: the executable SHA-256
+must be pinned, `mainnet` must be in its approved-network list, and a read-only
+startup probe must confirm that the runner advertises mainnet `settle-escrow`
+support. The bundled snooker `kascov-lab` currently advertises testnet-10 only.
+The reproducible, settlement-only mainnet patch and Linux artifact workflow are
+documented in [`tools/kascov-mainnet-runner`](tools/kascov-mainnet-runner/README.md);
+its binary still requires independent review and explicit hash approval.
 
 ## Adapter Contract
 
@@ -193,7 +246,7 @@ Thanks to:
 - Kaspa Docs / Toccata: https://docs.kaspa.org/toccata
 - SilverScript: https://github.com/kaspanet/silverscript
 - Kascov and Kascov Lab: https://github.com/Knitser/kascov
-- Kascov Explorer: https://kascov-explorer.web.app
+- Kascov Explorer: https://kascov.io
 - Kasware wallet: https://www.kasware.xyz
 
 ## License

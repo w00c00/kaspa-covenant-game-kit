@@ -47,6 +47,7 @@ test("two player wallet signatures are merged before an escrow can be broadcast"
   };
 
   const draft = await engine.buildPlayerFundedDeployDraft(match);
+  assert.doesNotThrow(() => JSON.stringify(draft), "the room store must be able to persist a signing draft across restarts");
   assert.match(draft.covenantId, /^[0-9a-f]{64}$/);
   assert.deepEqual(draft.kasware.param.options.signInputs, [
     { index: 0, sighashType: 1 },
@@ -72,4 +73,33 @@ test("two player wallet signatures are merged before an escrow can be broadcast"
   const merged = kaspa.Transaction.deserializeFromSafeJSON(both.mergedSignedTransactionSafeJson);
   assert.ok(merged.inputs[0].signatureScript);
   assert.ok(merged.inputs[1].signatureScript);
+});
+
+test("undersized covenant locks are rejected before wallet signatures", async () => {
+  const first = fundedPlayer("3");
+  const second = fundedPlayer("4");
+  const utxos = new Map([[first.address, first.utxo], [second.address, second.utxo]]);
+  const engine = new CovenantEscrowEngine({
+    networkId: "tn10",
+    arbiter: { arbiterHash: new KascovTools().blake2b256Hex("66".repeat(32)) },
+    fetchUtxos: async (address) => [utxos.get(address)].filter(Boolean)
+  });
+  const match = {
+    id: "KSP-SMALL",
+    roomId: "KSP-SMALL",
+    roundId: "ROUND-1",
+    game: "snooker",
+    stakeKas: 0.01,
+    players: [first, second].map((player, seat) => ({
+      seat,
+      role: `player-${seat + 1}`,
+      address: player.address,
+      publicKey: player.keypair.xOnlyPublicKey
+    }))
+  };
+
+  await assert.rejects(
+    () => engine.buildPlayerFundedDeployDraft(match),
+    (error) => error.code === "COVENANT_STANDARD_MASS_LIMIT" && Number(error.minimumStakeKas) === 0.05
+  );
 });

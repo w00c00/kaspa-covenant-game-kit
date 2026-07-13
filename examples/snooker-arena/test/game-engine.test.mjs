@@ -148,6 +148,20 @@ test("a timeout foul starts the opponent on a red, but preserves ordered colours
   assert.equal(colours.state.target, "brown");
 });
 
+test("a concession records the authenticated loser and awards the frame to the opponent", () => {
+  const engine = new SnookerEngine(null, {}, { headless: true });
+  assert.equal(engine.concede(1), true);
+  assert.equal(engine.state.winner, 0);
+  assert.equal(engine.state.visits.at(-1).player, 1);
+  assert.equal(engine.state.visits.at(-1).reason, "concession");
+  assert.equal(engine.concede(0), false);
+
+  const moving = new SnookerEngine(null, {}, { headless: true });
+  moving.inMotion = true;
+  assert.equal(moving.concede(0), false);
+  assert.equal(moving.state.winner, null);
+});
+
 test("fixed physics ticks produce identical results across render refresh rates", () => {
   const makeShot = () => {
     const engine = new SnookerEngine(null, {}, { headless: true });
