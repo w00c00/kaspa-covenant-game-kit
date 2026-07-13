@@ -121,6 +121,7 @@ document.querySelector("#app").innerHTML = `
           <div class="frame-info">FRAME 01 · BEST OF 1</div>
           <div class="score-row"><span class="score active" id="score-0">0</span><span class="score-divider">:</span><span class="score" id="score-1">0</span></div>
           <div class="turn-label">单杆 <strong id="break-score">0</strong> · 剩余红球 <strong id="reds-left">15</strong></div>
+          <button class="concede-button" id="concede-match" hidden>认输本局</button>
         </div>
         <div class="player away" id="player-1">
           <div><div class="player-role">等待击球</div><div class="player-name" id="player-1-name">等待对手</div><div class="player-address" id="player-1-address">分享房间链接邀请好友</div></div>
@@ -247,6 +248,7 @@ function applyLanguage() {
   setNodeText(".spin-card .control-label span", "母球击点", "Cue impact");
   setNodeText(".aim-fine em", "微调", "Fine aim");
   setNodeText("#cue-reposition", "重新摆白球", "Reposition cue ball");
+  setNodeText("#concede-match", "认输本局", "Concede frame");
   setNodeText("#cue-placement-banner", "手中球 · 请在 D 区拖动白球", "BALL IN HAND · Drag the cue ball inside the D");
   setNodeText(".touch-power small", "下拉 · 松开发杆", "Pull · Release");
   setNodeText("#aim-hint", coarsePointer.matches ? "滑动球桌瞄准 · 设置母球击点 · 右侧力度杆下拉并松开发杆" : "移动鼠标瞄准 · 左键按住蓄力 · 松开发杆", coarsePointer.matches ? "Swipe to aim · Set cue impact · Pull and release the power bar" : "Move to aim · Hold left mouse to charge · Release to shoot");
@@ -467,6 +469,14 @@ function showView(view) {
     refresh();
     lobbyRefreshTimer = setInterval(refresh, 5_000);
   }
+  updateConcedeButton();
+}
+
+function updateConcedeButton() {
+  const button = $("#concede-match");
+  if (!button) return;
+  button.hidden = model.view !== "game" || model.practiceMode || model.currentRoom?.status !== "playing" ||
+    !Number.isInteger(model.liveSeat) || model.winnerSeat !== null;
 }
 
 function renderLobbyRooms(rooms = []) {
@@ -650,6 +660,7 @@ socket.on("room:game-start", ({ room, snapshot, turnDeadline, practiceMode }) =>
     resetClock(turnDeadline || room?.turnDeadline);
   }
   showView("game");
+  updateConcedeButton();
   gameAudio.ready();
   showMessage(model.practiceMode ? tr("单机练习开始 · 你可以操作每个回合", "Solo practice started · You control every turn") : tr("双方已锁仓 · 比赛开始", "Both stakes locked · Match started"), "score");
 });
@@ -844,6 +855,7 @@ function startSettlementPolling() {
 }
 
 socket.on("game:finished", ({ winnerSeat, settlement, practiceMode, room }) => {
+  $("#concede-match").hidden = true;
   if (practiceMode || model.practiceMode) {
     model.winnerSeat = winnerSeat;
     if (room) model.currentRoom = room;
@@ -1206,7 +1218,9 @@ async function assertWalletStillBound() {
 }
 
 let walletEventsRegistered = false;
+let walletSessionEnabled = false;
 function handleWalletEvent(accounts) {
+  if (!walletSessionEnabled) return;
   void handleWalletAccountsChanged(accounts).catch((error) => {
     invalidateWallet(error?.message || tr("钱包状态更新失败，请重新连接", "Wallet state update failed. Please reconnect."));
   });
@@ -1240,6 +1254,7 @@ async function connectWallet() {
       if (decision.action !== "bind") {
         throw new Error(tr(`钱包网络不匹配，请切换到 ${networkShortName()}`, `Wallet network mismatch. Switch to ${networkShortName()}.`));
       }
+      walletSessionEnabled = true;
       await bindKaswareAddress(decision.address);
       registerWalletEvents();
     } else {
@@ -1247,11 +1262,29 @@ async function connectWallet() {
     }
     renderWalletIdentity();
   } catch (error) {
+    if (!model.wallet) walletSessionEnabled = false;
     showMessage(error.message || tr("钱包连接已取消", "Wallet connection cancelled"), "foul");
     button.textContent = tr("连接钱包", "Connect wallet");
   } finally {
     button.disabled = false;
   }
+}
+
+async function disconnectWallet() {
+  if (!model.wallet) return;
+  const disconnectedAddress = model.wallet.address;
+  walletSessionEnabled = false;
+  try {
+    if (typeof window.kasware?.disconnect === "function") await window.kasware.disconnect();
+  } catch {
+    // Older KasWare versions do not expose a revocable provider session.
+    // Clearing the dapp session still requires an explicit reconnect to sign.
+  }
+  model.wallet = null;
+  if ($("#faucet-address").value === disconnectedAddress) $("#faucet-address").value = "";
+  renderWalletIdentity();
+  closeModal();
+  showMessage(tr("钱包已从本页面断开", "Wallet disconnected from this page"), "score");
 }
 
 function openModal({ kind = "", eyebrow = "KASPA SNOOKER", title, body }) {
@@ -1268,11 +1301,14 @@ $("#modal").addEventListener("click", (event) => { if (event.target === $("#moda
 window.addEventListener("keydown", (event) => { if (event.key === "Escape") closeModal(); });
 
 function showWalletModal() {
+  const identityFrozen = roomWalletIdentityFrozen(model.currentRoom, model.liveSeat);
   openModal({
     eyebrow: "PLAYER IDENTITY",
     title: tr("已连接钱包", "Wallet connected"),
-    body: `<div class="data-grid"><div class="data-cell"><div class="data-label">Provider</div><div class="data-value good">${model.wallet.provider}</div></div><div class="data-cell"><div class="data-label">Network</div><div class="data-value">${model.config.network.label}</div></div><div class="data-cell" style="grid-column:1/-1"><div class="data-label">Address</div><div class="data-value">${model.wallet.address}</div></div></div><div class="modal-note">${tr("钱包只用于签署 Covenant 托管交易。游戏不会接触助记词或私钥。", "The wallet only signs Covenant escrow transactions. The game never accesses seed phrases or private keys.")}</div>`
+    body: `<div class="data-grid"><div class="data-cell"><div class="data-label">Provider</div><div class="data-value good">${model.wallet.provider}</div></div><div class="data-cell"><div class="data-label">Network</div><div class="data-value">${model.config.network.label}</div></div><div class="data-cell" style="grid-column:1/-1"><div class="data-label">Address</div><div class="data-value">${model.wallet.address}</div></div></div><div class="modal-note">${tr("钱包只用于签署 Covenant 托管交易。游戏不会接触助记词或私钥。", "The wallet only signs Covenant escrow transactions. The game never accesses seed phrases or private keys.")}${identityFrozen ? `<br>${tr("断开钱包不会撤销本局已签名或已上链的锁仓与结算。", "Disconnecting does not cancel escrow or settlement already signed or recorded on-chain.")}` : ""}</div><div class="modal-actions"><button class="outline-button" id="keep-wallet-connected">${tr("保持连接", "Keep connected")}</button><button class="outline-button danger-button" id="disconnect-wallet">${tr("断开钱包", "Disconnect wallet")}</button></div>`
   });
+  $("#keep-wallet-connected").addEventListener("click", closeModal);
+  $("#disconnect-wallet").addEventListener("click", disconnectWallet);
 }
 
 async function showEscrow() {
@@ -1329,8 +1365,6 @@ async function buildDraft() {
 }
 
 function showSettings() {
-  const concessionRow = !model.practiceMode && model.currentRoom?.status === "playing" ? `
-      <div class="settings-row"><div><div class="settings-name">${tr("认输", "Concede frame")}</div><div class="settings-help">${tr("由服务端判对手获胜并自动执行链上结算", "The server awards the frame to your opponent and settles on-chain")}</div></div><button class="outline-button danger-button" id="concede-frame" style="width:auto;margin:0;padding:0 12px">${tr("认输", "Concede")}</button></div>` : "";
   const practiceRows = model.practiceMode ? `
       <div class="settings-row"><div><div class="settings-name">${tr("练习模式", "Practice mode")}</div><div class="settings-help">${tr("无钱包、无押注、无链上结算", "No wallet, stake or settlement")}</div></div><strong>FREE PLAY</strong></div>
       <div class="settings-row"><div><div class="settings-name">${tr("重新摆球", "Rack again")}</div><div class="settings-help">${tr("清空当前比分并重新开始练习", "Clear scores and restart practice")}</div></div><button class="outline-button" id="practice-reset" style="width:auto;margin:0;padding:0 12px">${tr("重新摆球", "Rack again")}</button></div>
@@ -1342,7 +1376,6 @@ function showSettings() {
     body: `
       <div class="settings-row"><div><div class="settings-name">${tr("声音", "Sound")}</div><div class="settings-help">${tr("击球、碰球、落袋和犯规提示音", "Shots, collisions, pots and foul cues")}</div></div><button class="outline-button" id="toggle-sound" style="width:auto;margin:0;padding:0 12px">${model.muted ? tr("开启", "Enable") : tr("关闭", "Disable")}</button></div>
       ${practiceRows}
-      ${concessionRow}
       <div class="modal-note">${model.practiceMode ? tr("练习模式仍使用完整斯诺克规则，但你可以操作每一个回合。", "Practice uses the full rules, but you control every turn.") : tr("比赛开始后不能单方面重置、改分或手动指定赢家。超时、犯规、认输、胜负和结算全部由服务端权威规则状态机处理。", "After the match starts, scores and winners cannot be changed manually. The authoritative server handles timeouts, fouls, concessions, results and settlement.")}</div>`
   });
   $("#toggle-sound").addEventListener("click", () => {
@@ -1355,10 +1388,10 @@ function showSettings() {
     else closeModal();
   }));
   $("#practice-leave")?.addEventListener("click", () => { closeModal(); leaveCurrentRoom(); });
-  $("#concede-frame")?.addEventListener("click", confirmConcession);
 }
 
 function confirmConcession() {
+  if (model.practiceMode || model.currentRoom?.status !== "playing" || !Number.isInteger(model.liveSeat)) return;
   openModal({
     kind: "concession",
     eyebrow: "CONCEDE FRAME · 认输",
@@ -1416,6 +1449,7 @@ $("#language-toggle").addEventListener("click", () => {
   applyLanguage();
 });
 $("#wallet").addEventListener("click", connectWallet);
+$("#concede-match").addEventListener("click", confirmConcession);
 $("#create-room").addEventListener("click", () => {
   gameAudio.unlock();
   socket.emit("room:create", { ...identity(), stakeKas: Number($("#create-stake").value) }, enterRoom);
