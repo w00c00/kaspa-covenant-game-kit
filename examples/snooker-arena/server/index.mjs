@@ -569,6 +569,9 @@ async function recoverPendingSettlements() {
   settlementRecoveryRunning = true;
   const escrows = kit.listEscrows();
   const pending = kit.listSettlements().filter((item) => item.status !== "settled-on-chain" && item.chainCovenantId);
+  const unconfirmed = kit.listSettlements().filter(
+    (item) => item.status === "settled-on-chain" && item.chainSettlementTxid && item.confirmationStatus !== "confirmed-by-indexer"
+  );
   try {
     for (const settlement of pending) {
       const escrow = escrows.find((item) => item.id === settlement.chainEscrowId || item.deploy?.covenantId === settlement.chainCovenantId);
@@ -591,6 +594,13 @@ async function recoverPendingSettlements() {
         });
       } catch (error) {
         console.error(`Settlement recovery failed for ${settlement.id}:`, error.message || error);
+      }
+    }
+    for (const settlement of unconfirmed) {
+      try {
+        await kit.refreshSettlement(settlement.id);
+      } catch (error) {
+        console.error(`Settlement evidence refresh failed for ${settlement.id}:`, error.message || error);
       }
     }
   } finally {
@@ -858,9 +868,20 @@ io.on("connection", (socket) => {
     acknowledge?.({ ok: true, winnerSeat });
   });
 
-  socket.on("game:settlement:status", ({ roomId } = {}, acknowledge) => {
+  socket.on("game:settlement:status", async ({ roomId } = {}, acknowledge) => {
     const room = liveRooms.get(roomId);
     if (!room || socket.data.roomId !== roomId) return acknowledge?.({ ok: false, error: "房间不存在" });
+    const settlementId = room.settlement?.settlement?.id;
+    if (settlementId && room.settlement?.settlement?.chainSettlementTxid) {
+      try {
+        const refreshed = await kit.refreshSettlement(settlementId);
+        room.settlement = {
+          ...room.settlement,
+          settlement: refreshed,
+          visible: kit.proofs.visibleSettlement(refreshed, room.settlement.escrow)
+        };
+      } catch {}
+    }
     acknowledge?.({ ok: true, settlement: room.settlement, room: publicRoom(roomId) });
   });
 
@@ -912,7 +933,7 @@ io.on("connection", (socket) => {
 
 app.get("/api/health", async (_req, res) => {
   const funding = settlementFunding ? await settlementFunding.status() : null;
-  res.json({ ok: true, network: kit.network, settlementFunding: funding });
+  res.json({ ok: true, network: kit.network, abi: kit.abi, settlementFunding: funding });
 });
 
 app.get("/api/config", async (_req, res) => {
@@ -949,6 +970,7 @@ app.get("/api/config", async (_req, res) => {
     },
     chainMode: !staticEscrowReady ? "unavailable" : funding.ready ? "live" : "needs-funding",
     escrowReady,
+    covenantAbi: kit.abi,
     faucetAvailable: kit.network.isTestnet,
     stakeOptions: isMainnet ? mainnetStakeOptions : [5, 25, 50, 100],
     mainnetGuarded: true,

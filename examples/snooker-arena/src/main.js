@@ -610,7 +610,7 @@ function enterRoom(result) {
     renderPostMatchBar();
     if (!model.practiceMode) {
       renderSettlementModal();
-      if (!settlementDetails().done) startSettlementPolling();
+      if (!settlementDetails().confirmed) startSettlementPolling();
     }
     return;
   }
@@ -723,6 +723,8 @@ function settlementDetails(value = model.settlement) {
   return {
     status,
     done: status === "settled-on-chain",
+    confirmed: (visible.confirmationStatus || record.confirmationStatus) === "confirmed-by-indexer",
+    confirmationStatus: visible.confirmationStatus || record.confirmationStatus || "",
     failed: /failed|error/.test(status),
     covenantId,
     txid,
@@ -832,21 +834,24 @@ function renderSettlementModal() {
   openModal({
     kind: "settlement",
     eyebrow: "AUTOMATIC SETTLEMENT · 自动结算",
-    title: details.done ? tr("奖池已完成链上结算", "Prize pool settled on-chain") : tr("比赛结束 · 正在自动结算", "Frame complete · Settling automatically"),
+    title: details.confirmed
+      ? tr("奖池结算已获得索引确认", "Prize settlement has index confirmation")
+      : (details.done ? tr("释放交易已广播 · 等待索引确认", "Release broadcast · Awaiting index confirmation") : tr("比赛结束 · 正在自动结算", "Frame complete · Settling automatically")),
     body: `
       <div class="result-hero"><small>${tr("本局胜者", "FRAME WINNER")}</small><strong>${winnerName}</strong><span>${scores[0]} : ${scores[1]}</span></div>
       <div class="settlement-progress">
         <div class="settlement-progress-item done"><i>1</i><span><b>${tr("规则确认胜负", "Result verified")}</b><small>${tr("服务端权威对局记录已锁定", "Authoritative transcript locked")}</small></span></div>
         <div class="settlement-progress-item ${stepClass(Boolean(details.txid), !details.txid && !details.failed)}"><i>2</i><span><b>${tr("广播释放交易", "Broadcast release transaction")}</b><small>${details.txid ? `${tr("交易", "TX")} ${short(details.txid)}` : settlementStatusLabel(details.status)}</small></span></div>
-        <div class="settlement-progress-item ${stepClass(details.done, Boolean(details.txid) && !details.done)}"><i>3</i><span><b>${tr(`${networkShortName()} 链上确认`, `${networkShortName()} confirmation`)}</b><small>${details.done ? tr("奖池已释放至胜者钱包", "Prize released to winner wallet") : tr("自动刷新，无需手动操作", "Auto-refreshing; no action required")}</small></span></div>
+        <div class="settlement-progress-item ${stepClass(details.confirmed, Boolean(details.txid) && !details.confirmed)}"><i>3</i><span><b>${tr("Kascov 索引确认", "Kascov index confirmation")}</b><small>${details.confirmed ? tr("Kascov 已核验这笔 Covenant 结算交易", "Kascov has observed the covenant settlement transaction") : tr("交易已广播，正在自动刷新索引结果", "Transaction broadcast; refreshing index evidence automatically")}</small></span></div>
       </div>
       <div class="data-grid settlement-data">
         <div class="data-cell"><div class="data-label">${tr("结算状态", "STATUS")}</div><div class="data-value ${details.done ? "good" : ""}" id="live-settlement-status">${settlementStatusLabel(details.status)}</div></div>
+        <div class="data-cell"><div class="data-label">${tr("索引证据", "INDEX EVIDENCE")}</div><div class="data-value ${details.confirmed ? "good" : ""}">${details.confirmed ? tr("Kascov 已确认", "Kascov confirmed") : tr("等待索引", "Pending index")}</div></div>
         <div class="data-cell"><div class="data-label">${tr("释放金额", "RELEASED")}</div><div class="data-value good">${details.releasedKas || model.stakeKas * 2} ${currencySymbol()}</div></div>
         ${details.covenantId ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Covenant ID</div><div class="data-value">${details.covenantId}</div></div>` : ""}
         ${details.txid ? `<div class="data-cell" style="grid-column:1/-1"><div class="data-label">Settlement TXID</div><div class="data-value">${details.txid}</div></div>` : ""}
       </div>
-      ${details.error && !details.done ? `<div class="modal-note settlement-error">${tr("网络提交暂时失败，服务会自动重试：", "Network submission failed temporarily; the service will retry: ")}${details.error}</div>` : `<div class="modal-note">${tr("此页面每 3 秒自动刷新结算状态。即使关闭页面，服务端也会继续重试直至结算完成。", "Settlement status refreshes every 3 seconds. Server-side retries continue even if this page is closed.")}</div>`}
+      ${details.error && !details.done ? `<div class="modal-note settlement-error">${tr("网络提交暂时失败，服务会自动重试：", "Network submission failed temporarily; the service will retry: ")}${details.error}</div>` : `<div class="modal-note">${details.done && !details.confirmed ? tr("释放交易已广播；Kascov 只作为可验证索引证据，页面会每 3 秒自动刷新，不参与胜负裁决或资金共识。", "The release transaction is broadcast. Kascov is used only as verifiable index evidence; this page refreshes every 3 seconds and Kascov does not decide the result or custody funds.") : tr("此页面每 3 秒自动刷新结算状态。即使关闭页面，服务端也会继续重试直至结算完成。", "Settlement status refreshes every 3 seconds. Server-side retries continue even if this page is closed.")}</div>`}
       <div class="settlement-links">
         ${kascovUrl ? `<a class="outline-button" href="${kascovUrl}" target="_blank" rel="noopener">${tr("在 Kascov 查看", "View on Kascov")} ↗</a>` : ""}
         ${txUrl ? `<a class="outline-button" href="${txUrl}" target="_blank" rel="noopener">${tr("查看结算交易", "View settlement transaction")} ↗</a>` : ""}
@@ -864,11 +869,13 @@ function updateSettlement(settlement) {
   renderPostMatchBar();
   const details = settlementDetails();
   const step = $("#step-settle");
-  step.classList.toggle("pending", !details.done);
-  step.querySelector(".step-state").textContent = details.done ? tr("已结算", "Settled") : tr("结算中", "Settling");
-  if (details.done) {
+  step.classList.toggle("pending", !details.confirmed);
+  step.querySelector(".step-state").textContent = details.confirmed
+    ? tr("已确认", "Confirmed")
+    : (details.done ? tr("已广播", "Broadcast") : tr("结算中", "Settling"));
+  if (details.confirmed) {
     clearSettlementPolling();
-    showMessage(tr("链上结算完成 · 奖池已发给胜者", "On-chain settlement complete · Prize sent to winner"), "score");
+    showMessage(tr("链上结算已获得 Kascov 索引确认", "On-chain settlement confirmed by the Kascov index"), "score");
   }
 }
 
@@ -899,7 +906,7 @@ socket.on("game:finished", ({ winnerSeat, settlement, practiceMode, room }) => {
   showMessage(tr(`比赛结束 · Player ${winnerSeat + 1} 获胜`, `Frame complete · Player ${winnerSeat + 1} wins`), "score");
   renderPostMatchBar();
   renderSettlementModal();
-  if (!settlementDetails().done) startSettlementPolling();
+  if (!settlementDetails().confirmed) startSettlementPolling();
 });
 socket.on("game:settlement", ({ settlement }) => {
   updateSettlement(settlement);
