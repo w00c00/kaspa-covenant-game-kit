@@ -35,7 +35,11 @@ class KaspaCovenantGameKit {
     });
     this.kascovLab =
       options.kascovLab ||
-      (options.kascovLabBin ? new KascovLabAdapter({ bin: options.kascovLabBin, env: options.kascovLabEnv }) : null);
+      (options.kascovLabBin ? new KascovLabAdapter({
+        bin: options.kascovLabBin,
+        env: options.kascovLabEnv,
+        keyFile: options.kascovLabKeyFile
+      }) : null);
     this.settlements = options.settlementEngine || new SettlementEngine({
       escrowEngine: this.escrow,
       proofBuilder: this.proofs,
