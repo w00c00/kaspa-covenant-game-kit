@@ -22,6 +22,8 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 - Maps a game winner to the covenant release path, currently `buyer` or `seller`.
 - Settles through a pluggable settlement runner, with `kascov-lab settle-escrow` supported for the current lab flow.
 - Generates readable proof data: covenant id, lock tx, settlement tx, winner, amount, release path, and Kascov Explorer URL.
+- Emits versioned Covenant descriptors that pin network, ABI, compiler provenance, program identity, and entrypoints.
+- Separates `Reader`, `Writer`, and `Indexer` boundaries, including Kascov settlement-evidence refresh.
 - Provides a Gomoku adapter and a custom adapter example.
 
 ## 中文说明
@@ -30,6 +32,7 @@ SDK-style modules for building Kaspa TN10 / mainnet SilverScript covenant-backed
 
 - 游戏项目负责：房间、玩家、规则、胜负、前端体验。
 - SDK 负责：TN10 covenant 托管、钱包签名草案、结算路径、链上结算、凭据。
+- SDK 同时提供版本化 Descriptor，以及独立的 Reader / Writer / Indexer 接口；Kascov 只作为可验证索引证据，不参与胜负或资金共识。
 - 新游戏只要实现 `toMatch(room, state)`，就可以接入最小流程。
 - 如果还实现 `createState / applyMove / getWinnerAddress`，就能获得更完整的 adapter 体验。
 
@@ -210,6 +213,15 @@ const result = await kit.settleWinner({
 });
 ```
 
+Broadcast and index evidence are separate. Applications can refresh Kascov evidence without treating the explorer as consensus:
+
+```js
+const refreshed = await kit.refreshSettlement(result.settlement.id);
+console.log(refreshed.confirmationStatus); // pending-indexer | confirmed-by-indexer
+```
+
+`draft.descriptor.abi` pins the ABI and the compiler provenance actually used by the writer. The incompatible KCC1 BLAKE3 draft remains read-only and is rejected by the current transaction writer.
+
 More detail: [docs/integration-flow.md](docs/integration-flow.md)
 
 ## Core Exports
@@ -217,6 +229,9 @@ More detail: [docs/integration-flow.md](docs/integration-flow.md)
 - `KaspaCovenantGameKit`: high-level SDK facade.
 - `CovenantEscrowEngine`: low-level escrow intent, draft, signature, broadcast engine.
 - `SettlementEngine`: winner settlement engine.
+- `CovenantReader / CovenantWriter / CovenantIndexer`: stable chain integration boundaries.
+- `KascovIndexerAdapter`: network-scoped Kascov reads, polling, and settlement evidence.
+- `createCovenantDescriptor / ABI_PROFILES`: versioned ABI and program identity metadata.
 - `ProofBuilder`: proof and visible settlement builder.
 - `KascovLabAdapter`: wrapper around `kascov-lab`.
 - `JsonStore`: simple local storage adapter.
@@ -231,6 +246,7 @@ node examples/custom-game-adapter.js
 
 ## Status
 
+- SDK package: `0.2.0` developer preview.
 - TN10: default active experimental path.
 - Mainnet: same SDK path, production-guarded behind `allowMainnet`.
 - Game mode: two-player escrow first.

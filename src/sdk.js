@@ -7,6 +7,8 @@ const { KascovLabAdapter } = require("./kascov-lab-adapter");
 const { resolveNetworkConfig } = require("./network");
 const { ProofBuilder } = require("./proof-builder");
 const { SettlementEngine } = require("./settlement-engine");
+const { createCovenantDescriptor, resolveAbiProfile } = require("./abi");
+const { KascovCovenantReader, KascovIndexerAdapter } = require("./kascov-indexer");
 const gomokuAdapter = require("./adapters/gomoku");
 const { nowIso } = require("./utils");
 
@@ -14,6 +16,7 @@ class KaspaCovenantGameKit {
   constructor(options = {}) {
     this.network = resolveNetworkConfig(options);
     this.networkId = this.network.id;
+    this.abi = resolveAbiProfile(options.abiProfile || options.abi);
     this.store = options.store || new JsonStore(options.storeFile || "");
     this.adapters = new Map();
 
@@ -24,6 +27,7 @@ class KaspaCovenantGameKit {
     this.escrow = options.escrowEngine || new CovenantEscrowEngine({
       ...options,
       network: this.network,
+      abi: this.abi,
       store: this.store
     });
     this.proofs = options.proofBuilder || new ProofBuilder({
@@ -53,10 +57,19 @@ class KaspaCovenantGameKit {
         throw new Error("Mainnet settlement runner must implement assertApprovedForNetwork(networkId)");
       }
     }
+    this.abi = this.escrow.abi || this.abi;
+    this.indexer = options.indexer || (options.kascovIndexer === false ? null : new KascovIndexerAdapter({
+      network: this.network,
+      baseUrl: options.kascovApiBase,
+      fetch: options.fetch,
+      pollIntervalMs: options.kascovPollIntervalMs
+    }));
+    this.reader = options.reader || (this.indexer ? new KascovCovenantReader({ indexer: this.indexer }) : null);
     this.settlements = options.settlementEngine || new SettlementEngine({
       escrowEngine: this.escrow,
       proofBuilder: this.proofs,
       kascovLab: this.kascovLab,
+      indexer: this.indexer,
       store: this.store
     });
   }
@@ -104,6 +117,7 @@ class KaspaCovenantGameKit {
       programHex: draft.programHex,
       programHash: draft.programHash,
       programProfile: draft.intent.programProfile,
+      descriptor: draft.descriptor,
       stakeKas: draft.intent.stakeKas,
       totalLockedKas: draft.intent.totalLockedKas,
       buyer: draft.intent.buyer,
@@ -114,6 +128,29 @@ class KaspaCovenantGameKit {
       playerSignatures: []
     });
     return draft;
+  }
+
+  createCovenantDescriptor(options = {}) {
+    return createCovenantDescriptor({ ...options, network: options.network || this.network, abi: options.abi || this.abi });
+  }
+
+  getCovenant(covenantId, options = {}) {
+    if (!this.indexer) throw new Error("No CovenantIndexer is configured");
+    return this.indexer.getCovenant(covenantId, options);
+  }
+
+  getTransaction(txid, options = {}) {
+    if (!this.indexer) throw new Error("No CovenantIndexer is configured");
+    return this.indexer.getTransaction(txid, options);
+  }
+
+  refreshSettlement(settlementOrId, options = {}) {
+    return this.settlements.refreshSettlement(settlementOrId, options);
+  }
+
+  watchCovenant(covenantId, options = {}) {
+    if (!this.indexer) throw new Error("No CovenantIndexer is configured");
+    return this.indexer.watchCovenant(covenantId, options);
   }
 
   mergePlayerSignatures({ draft, signatures }) {

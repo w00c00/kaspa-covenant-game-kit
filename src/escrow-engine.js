@@ -1,6 +1,8 @@
 "use strict";
 
 const { DEFAULT_NETWORKS } = require("./constants");
+const { assertWritableAbi, createCovenantDescriptor, resolveAbiProfile } = require("./abi");
+const { CovenantWriter } = require("./covenant-interfaces");
 const { KascovTools } = require("./kascov-tools");
 const { resolveNetworkConfig } = require("./network");
 const { SilvercAdapter } = require("./silverc-adapter");
@@ -110,8 +112,9 @@ function transactionMassLimitError({ kaspa, networkId, transaction, minimumSigna
   return error;
 }
 
-class CovenantEscrowEngine {
+class CovenantEscrowEngine extends CovenantWriter {
   constructor(options = {}) {
+    super();
     this.kaspa = options.kaspa || null;
     this.store = options.store || null;
     this.network = resolveNetworkConfig({
@@ -127,6 +130,16 @@ class CovenantEscrowEngine {
     }) : null);
     const compilerManifest = this.silverc ? this.silverc.profileManifest() : null;
     this.programProfile = this.kascovTools.escrowProgramProfile({ compilerManifest });
+    const requestedAbi = resolveAbiProfile(options.abiProfile || options.abi);
+    this.abi = Object.freeze(requestedAbi.id === "silverscript-v0" && compilerManifest
+      ? {
+          ...requestedAbi,
+          status: "pinned-experimental",
+          compilerCommit: compilerManifest.upstreamCommit,
+          compilerSha256: compilerManifest.compilerSha256,
+          contractSourceSha256: compilerManifest.sourceSha256
+        }
+      : requestedAbi);
     this.arbiter = options.arbiter || {};
     this.computeBudget = Number(options.computeBudget || DEFAULT_COMPUTE_BUDGET);
     this.feeShareSompi = BigInt(options.feeShareSompi || DEFAULT_FEE_SHARE_SOMPI);
@@ -166,6 +179,28 @@ class CovenantEscrowEngine {
       shortAddress: shortAddress(player.address),
       hasPublicKey: hasPublicKey(player.publicKey)
     }));
+  }
+
+  escrowDescriptor(match, options = {}) {
+    return createCovenantDescriptor({
+      id: `COVDESC-${match.id}-${match.roundId || "round"}`,
+      contract: "SilverScript · Escrow",
+      network: this.network,
+      abi: this.abi,
+      covenantId: options.covenantId || "",
+      programHash: options.programHash || "",
+      entrypoints: [
+        { name: "releaseBuyer", selector: 0, authorization: "arbiter-signature" },
+        { name: "releaseSeller", selector: 1, authorization: "arbiter-signature" }
+      ],
+      metadata: {
+        game: match.game || "",
+        matchId: match.id || "",
+        roundId: match.roundId || "",
+        writer: "CovenantEscrowEngine",
+        programProfileFingerprint: this.programProfile.fingerprint
+      }
+    });
   }
 
   createIntent(match) {
@@ -224,6 +259,7 @@ class CovenantEscrowEngine {
       programHex,
       programHash,
       programProfile: { ...this.programProfile, mainnetApproved: this.mainnetProgramProfileApproved },
+      descriptor: this.escrowDescriptor(match, { programHash }),
       missingPublicKeys: missing.map((player) => player.address),
       deployCommand: programHex && stakeSompi > 0n ? `kascov-lab deploy --program-hex ${programHex} --value ${stakeSompi * BigInt(players.length)}` : "",
       settleWinnerCommand: programHex ? `kascov-lab settle-escrow --program-hex ${programHex} --release-to <buyer|seller>` : ""
@@ -293,6 +329,7 @@ class CovenantEscrowEngine {
   }
 
   async buildPlayerFundedDeployDraft(match) {
+    assertWritableAbi(this.abi);
     const kaspa = loadKaspa(this.kaspa);
     const intent = this.createIntent(match);
     if (intent.status !== "ready-for-pskt-builder" || !intent.programHex) {
@@ -397,6 +434,7 @@ class CovenantEscrowEngine {
     const safe = JSON.parse(unsignedTransactionSafeJson);
     const covenantId = safe.outputs?.[0]?.covenant?.covenantId || "";
     const nativePskt = this.buildPsktSignerEnvelope(inputs, transaction.outputs);
+    const descriptor = this.escrowDescriptor(match, { covenantId, programHash: intent.programHash });
 
     return {
       id: `PLAYER-DRAFT-${match.id}`,
@@ -413,6 +451,7 @@ class CovenantEscrowEngine {
       programHex: intent.programHex,
       programHash: intent.programHash,
       programProfile: intent.programProfile,
+      descriptor,
       unsignedTransactionSafeJson,
       unsignedTransaction: safe,
       nativePskt,
@@ -527,6 +566,7 @@ class CovenantEscrowEngine {
   }
 
   async broadcastSignedCovenant(match, safeTransactionJson, existingRecord = {}) {
+    assertWritableAbi(this.abi);
     const kaspa = loadKaspa(this.kaspa);
     if (!safeTransactionJson) throw new Error("signedTransactionSafeJson is required");
     const approvedRecord = existingRecord?.unsignedTransactionSafeJson
@@ -580,6 +620,10 @@ class CovenantEscrowEngine {
       covenantId: covenant.covenantId.toString(),
       programHex: intent.programHex,
       programHash: intent.programHash,
+      descriptor: existingRecord.descriptor || this.escrowDescriptor(match, {
+        covenantId: covenant.covenantId.toString(),
+        programHash: intent.programHash
+      }),
       stakeKas: intent.stakeKas,
       totalLockedKas: intent.totalLockedKas,
       valueSompi: tx.outputs?.[0]?.value?.toString?.() || String(tx.outputs?.[0]?.value || ""),
@@ -630,6 +674,14 @@ class CovenantEscrowEngine {
         await rpc.stop?.();
       } catch {}
     }
+  }
+
+  buildDeployDraft(match) {
+    return this.buildPlayerFundedDeployDraft(match);
+  }
+
+  broadcastDeploy(match, signedTransaction, existingRecord = {}) {
+    return this.broadcastSignedCovenant(match, signedTransaction, existingRecord);
   }
 }
 

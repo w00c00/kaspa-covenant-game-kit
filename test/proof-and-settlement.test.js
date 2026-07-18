@@ -79,3 +79,30 @@ test("settlement engine maps winner to buyer or seller release path", () => {
   assert.equal(pending.covenantProof.programHash, "55".repeat(32));
   assert.equal(pending.covenantProof.programProfileFingerprint, "66".repeat(32));
 });
+
+test("settlement refresh stores Kascov evidence without treating the indexer as consensus", async () => {
+  const store = new JsonStore();
+  const escrowEngine = new CovenantEscrowEngine({ store, network: DEFAULT_NETWORKS.tn10 });
+  const proofBuilder = new ProofBuilder({ network: DEFAULT_NETWORKS.tn10 });
+  const indexer = {
+    observeSettlement: async ({ covenantId, txid }) => ({
+      source: "kascov",
+      observed: true,
+      covenantId,
+      txid,
+      event: { kind: "burn", txid }
+    })
+  };
+  const engine = new SettlementEngine({ escrowEngine, proofBuilder, store, indexer });
+  const record = store.upsertSettlement({
+    id: "SETTLEMENT-1",
+    status: "settled-on-chain",
+    chainCovenantId: "55".repeat(32),
+    chainSettlementTxid: "66".repeat(32)
+  });
+
+  const refreshed = await engine.refreshSettlement(record.id);
+  assert.equal(refreshed.status, "settled-on-chain");
+  assert.equal(refreshed.confirmationStatus, "confirmed-by-indexer");
+  assert.equal(refreshed.indexerEvidence.source, "kascov");
+});

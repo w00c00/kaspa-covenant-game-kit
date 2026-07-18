@@ -47,6 +47,8 @@ function applyNetworkEnvOverrides(network) {
     explorerApi: process.env[`${prefix}_EXPLORER_API`] || network.explorerApi,
     kascovNetworkId: process.env[`${prefix}_KASCOV_NETWORK`] || network.kascovNetworkId,
     kascovExplorerBase: process.env[`${prefix}_KASCOV_EXPLORER`] || network.kascovExplorerBase,
+    kascovApiBase: process.env[`${prefix}_KASCOV_API`] || network.kascovApiBase,
+    kascovStreamBase: process.env[`${prefix}_KASCOV_STREAM`] || network.kascovStreamBase,
     kascovLiveDataUrl: process.env[`${prefix}_KASCOV_LIVE_DATA`] || network.kascovLiveDataUrl
   };
 }

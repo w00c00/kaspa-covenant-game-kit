@@ -77,6 +77,9 @@ class ProofBuilder {
       contractSourceHash: settlement.covenantProof?.contractSourceHash || "",
       releaseTo: settlement.releaseTo || escrow?.releaseTo || "",
       releasedKas: escrow?.settle?.releasedKas || 0,
+      confirmationStatus: settlement.confirmationStatus || "",
+      confirmedAt: settlement.confirmedAt || "",
+      indexerEvidence: settlement.indexerEvidence || null,
       txid,
       txExplorerUrl: txid ? explorerTxUrl(txid, this.network) : "",
       covenantStoryUrl:

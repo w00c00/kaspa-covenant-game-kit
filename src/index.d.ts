@@ -9,9 +9,41 @@ export interface NetworkConfig {
   explorerApi?: string;
   kascovNetworkId?: "testnet-10" | "mainnet" | string;
   kascovExplorerBase?: string;
+  kascovApiBase?: string;
+  kascovStreamBase?: string;
   kascovLiveDataUrl?: string;
   mode?: string;
   requiresMainnetConfirmation?: boolean;
+}
+
+export interface CovenantAbiProfile {
+  id: string;
+  version?: number;
+  status?: string;
+  selectorEncoding?: string;
+  templateHash?: string;
+  compilerRepository?: string;
+  compilerCommit?: string;
+  compilerSha256?: string;
+  contractSourceSha256?: string;
+  specificationRepository?: string;
+  specificationCommit?: string;
+  transactionWriterReady: boolean;
+}
+
+export interface CovenantDescriptor {
+  id: string;
+  schema: "kaspa-covenant-descriptor";
+  schemaVersion: 1;
+  contract: string;
+  network: Pick<NetworkConfig, "id" | "kaspaNetworkId" | "kascovNetworkId">;
+  abi: CovenantAbiProfile;
+  covenantId: string;
+  programHash: string;
+  stateLayout: unknown[];
+  entrypoints: unknown[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface Player {
@@ -74,6 +106,7 @@ export interface EscrowIntent {
   programHex: string;
   programHash: string;
   programProfile?: CovenantProgramProfile;
+  descriptor: CovenantDescriptor;
   buyer?: Player;
   seller?: Player;
 }
@@ -84,6 +117,7 @@ export interface DeployDraft {
   status: string;
   covenantId: string;
   programHex: string;
+  descriptor: CovenantDescriptor;
   unsignedTransactionSafeJson: string;
   signers: Array<{
     inputIndex: number;
@@ -105,6 +139,12 @@ export interface JsonStoreState {
 }
 
 export declare const DEFAULT_NETWORKS: Record<"tn10" | "mainnet", NetworkConfig>;
+export declare const DEFAULT_ABI_PROFILE: "silverscript-v0";
+export declare const ABI_PROFILES: Record<string, CovenantAbiProfile>;
+export declare function resolveAbiProfile(profile?: string | CovenantAbiProfile): CovenantAbiProfile;
+export declare function assertWritableAbi(profile?: string | CovenantAbiProfile): CovenantAbiProfile;
+export declare function createCovenantDescriptor(options?: Record<string, unknown>): CovenantDescriptor;
+export declare function validateCovenantDescriptor(descriptor: CovenantDescriptor): CovenantDescriptor;
 export declare const ENV_NETWORK_KEY: "KASPA_COVENANT_NETWORK";
 export declare const ENV_ALLOW_MAINNET_KEY: "KASPA_COVENANT_ALLOW_MAINNET";
 export declare function normalizeNetworkId(value?: string): "tn10" | "mainnet" | string;
@@ -144,7 +184,34 @@ export declare class JsonStore {
   findSettlement<T = unknown>(predicate: (record: T) => boolean): T | null;
 }
 
-export declare class CovenantEscrowEngine {
+export declare class CovenantReader {
+  readCovenant(descriptor: CovenantDescriptor): Promise<unknown>;
+  readTransaction(txid: string): Promise<unknown>;
+}
+
+export declare class CovenantWriter {
+  buildDeployDraft(match: Match): Promise<DeployDraft>;
+  broadcastDeploy(match: Match, signedTransaction: string | object, existingRecord?: object): Promise<unknown>;
+}
+
+export declare class CovenantIndexer {
+  getCovenant(covenantId: string, options?: Record<string, unknown>): Promise<any>;
+  getTransaction(txid: string, options?: Record<string, unknown>): Promise<any>;
+  watchCovenant(covenantId: string, options?: Record<string, unknown>): () => void;
+}
+
+export declare class KascovIndexerAdapter extends CovenantIndexer {
+  constructor(options?: Record<string, unknown>);
+  getLive(options?: Record<string, unknown>): Promise<any>;
+  getEvents(options?: Record<string, unknown>): Promise<any>;
+  observeSettlement(input: { covenantId: string; txid?: string; signal?: unknown }): Promise<any>;
+}
+
+export declare class KascovCovenantReader extends CovenantReader {
+  constructor(options?: { indexer?: KascovIndexerAdapter } & Record<string, unknown>);
+}
+
+export declare class CovenantEscrowEngine extends CovenantWriter {
   constructor(options?: Record<string, unknown>);
   escrowId(match: Match): string;
   createIntent(match: Match): EscrowIntent;
@@ -163,6 +230,7 @@ export declare class ProofBuilder {
 export declare class SettlementEngine {
   constructor(options: Record<string, unknown>);
   settleWinner(input: { match: Match; winnerAddress: string; reason?: string; gameState?: unknown; settlementId?: string }): Promise<unknown>;
+  refreshSettlement(settlementOrId: string | object, options?: Record<string, unknown>): Promise<unknown>;
 }
 
 export declare class KascovLabAdapter {
@@ -279,6 +347,7 @@ export declare class KaspaCovenantGameKit {
     contractSource?: string;
     kascovLab?: KascovLabAdapter | null;
     kascovLabBin?: string;
+    kascovLabKeyFile?: string;
     kascovLabExpectedSha256?: string;
     kascovLabApprovedNetworks?: string[];
     silverc?: SilvercAdapter | null;
@@ -289,6 +358,11 @@ export declare class KaspaCovenantGameKit {
     mainnetProgramProfileFingerprint?: string;
     mainnetMaxStakeKas?: KasAmount;
     maxStakeSompi?: string | number | bigint;
+    abi?: string | CovenantAbiProfile;
+    abiProfile?: string | CovenantAbiProfile;
+    indexer?: CovenantIndexer | null;
+    reader?: CovenantReader | null;
+    kascovIndexer?: boolean;
     [key: string]: unknown;
   });
   registerAdapter(name: string, adapter: GameAdapter): GameAdapter;
@@ -298,6 +372,11 @@ export declare class KaspaCovenantGameKit {
   toMatch(input: { game?: string; room?: unknown; state?: unknown; adapter?: GameAdapter; match?: Match } | Match): Match;
   createEscrowIntent(input: { game?: string; room?: unknown; state?: unknown; adapter?: GameAdapter; match?: Match } | Match): EscrowIntent;
   buildDeployDraft(input: { game?: string; room?: unknown; state?: unknown; adapter?: GameAdapter; match?: Match } | Match): Promise<DeployDraft>;
+  createCovenantDescriptor(options?: Record<string, unknown>): CovenantDescriptor;
+  getCovenant(covenantId: string, options?: Record<string, unknown>): Promise<any>;
+  getTransaction(txid: string, options?: Record<string, unknown>): Promise<any>;
+  refreshSettlement(settlementOrId: string | object, options?: Record<string, unknown>): Promise<unknown>;
+  watchCovenant(covenantId: string, options?: Record<string, unknown>): () => void;
   mergePlayerSignatures(input: { draft: DeployDraft; signatures: unknown[] }): unknown;
   submitPlayerSignature(input: {
     match: Match;

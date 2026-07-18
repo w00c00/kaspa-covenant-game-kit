@@ -9,11 +9,43 @@ class SettlementEngine {
     this.store = options.store || this.escrowEngine?.store || null;
     this.proofBuilder = options.proofBuilder;
     this.kascovLab = options.kascovLab;
+    this.indexer = options.indexer || null;
     this.inFlight = new Map();
     this.workerId = options.workerId || `${os.hostname()}:${process.pid}:${sha256Hex(String(Math.random())).slice(0, 12)}`;
     this.settlementLeaseTtlMs = Math.max(180_000, Number(options.settlementLeaseTtlMs) || 300_000);
     if (!this.escrowEngine) throw new Error("SettlementEngine requires escrowEngine");
     if (!this.proofBuilder) throw new Error("SettlementEngine requires proofBuilder");
+  }
+
+  async refreshSettlement(settlementOrId, options = {}) {
+    const settlement = typeof settlementOrId === "string"
+      ? this.store?.findSettlement((item) => item.id === settlementOrId)
+      : settlementOrId;
+    if (!settlement) throw new Error("Settlement was not found");
+    const covenantId = settlement.chainCovenantId || options.covenantId || "";
+    const txid = settlement.chainSettlementTxid || options.txid || "";
+    if (!this.indexer || !covenantId || !txid) return settlement;
+    try {
+      const evidence = await this.indexer.observeSettlement({ covenantId, txid, signal: options.signal });
+      const refreshed = {
+        ...settlement,
+        confirmationStatus: evidence.observed ? "confirmed-by-indexer" : "pending-indexer",
+        confirmedAt: evidence.observed ? nowIso() : settlement.confirmedAt || "",
+        indexerEvidence: evidence,
+        indexerError: "",
+        lastIndexerCheckAt: nowIso()
+      };
+      return this.store?.upsertSettlement(refreshed) || refreshed;
+    } catch (error) {
+      const notIndexedYet = Number(error.status || 0) === 404;
+      const refreshed = {
+        ...settlement,
+        confirmationStatus: notIndexedYet ? "pending-indexer" : "indexer-unavailable",
+        indexerError: notIndexedYet ? "" : (error.message || String(error)),
+        lastIndexerCheckAt: nowIso()
+      };
+      return this.store?.upsertSettlement(refreshed) || refreshed;
+    }
   }
 
   findEscrowForMatch(match) {
@@ -105,10 +137,11 @@ class SettlementEngine {
         releaseTo: pending.releaseTo || escrowRecord.releaseTo || "",
         releasedKas: pending.releasedKas || escrowRecord.settle?.releasedKas || 0
       }) || pending;
+      const refreshed = await this.refreshSettlement(reconciled);
       return {
-        settlement: reconciled,
+        settlement: refreshed,
         escrow: escrowRecord,
-        visible: this.proofBuilder.visibleSettlement(reconciled, escrowRecord)
+        visible: this.proofBuilder.visibleSettlement(refreshed, escrowRecord)
       };
     }
     if (!this.kascovLab) {
@@ -175,10 +208,11 @@ class SettlementEngine {
         chainSettlementError: "",
         error: ""
       });
+      const refreshedSettlement = await this.refreshSettlement(updatedSettlement);
       return {
-        settlement: updatedSettlement,
+        settlement: refreshedSettlement,
         escrow: settled,
-        visible: this.proofBuilder.visibleSettlement(updatedSettlement, settled)
+        visible: this.proofBuilder.visibleSettlement(refreshedSettlement, settled)
       };
     } catch (error) {
       const failedEscrow = this.store?.upsertEscrow({
